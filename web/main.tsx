@@ -62,13 +62,13 @@ function CategoryField({
   const id = useId();
   return (
     <label>
-      Category
+      Pool
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
         list={id}
         maxLength={60}
-        placeholder="Uncategorized"
+        placeholder="Pool name"
       />
       <datalist id={id}>
         {categories.map((name) => (
@@ -548,14 +548,14 @@ function Library({ onLogout }: { onLogout: () => void }) {
             </label>
             <label className="select-wrap">
               <select
-                aria-label="Category"
+                aria-label="Pool"
                 value={category}
                 onChange={(e) => {
                   setCategory(e.target.value);
                   setOffset(0);
                 }}
               >
-                <option value="">All categories</option>
+                <option value="">All pools</option>
                 {[
                   ...new Set([
                     ...data.categories,
@@ -1193,7 +1193,16 @@ function Detail({
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [editing, setEditing] = useState(false),
+    [showTranscription, setShowTranscription] = useState(false),
     [confirmDelete, setConfirmDelete] = useState(false);
+  const transcriptionId = useId();
+  const wipeConfirmation = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (confirmDelete) {
+      wipeConfirmation.current?.scrollIntoView({ block: "nearest" });
+      wipeConfirmation.current?.querySelector("button")?.focus();
+    }
+  }, [confirmDelete]);
   const [notes, setNotes] = useState(""),
     [title, setTitle] = useState(""),
     [summary, setSummary] = useState(""),
@@ -1343,26 +1352,6 @@ function Detail({
             </label>
             <div className="detail-section">
               <h3>
-                <Bookmark size={15} />
-                My notes
-              </h3>
-              <textarea
-                aria-label="My notes"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={4}
-                maxLength={8000}
-                placeholder="Why it matters. What happened next."
-              />
-              <button
-                disabled={busy || notes === detail.item.notes}
-                onClick={() => void update({ notes })}
-              >
-                Save notes
-              </button>
-            </div>
-            <div className="detail-section">
-              <h3>
                 <FileText size={15} />
                 Original source
               </h3>
@@ -1391,7 +1380,25 @@ function Detail({
                   />
                 )}
               {detail.source.originalText && (
-                <pre className="source-text">{detail.source.originalText}</pre>
+                <div className="transcription">
+                  <button
+                    aria-expanded={showTranscription}
+                    aria-controls={transcriptionId}
+                    onClick={() => setShowTranscription((value) => !value)}
+                  >
+                    <FileText size={15} />
+                    {showTranscription
+                      ? "Hide transcription"
+                      : "View transcription"}
+                  </button>
+                  <pre
+                    id={transcriptionId}
+                    className="source-text"
+                    hidden={!showTranscription}
+                  >
+                    {detail.source.originalText}
+                  </pre>
+                </div>
               )}
               {detail.source.hasFile &&
                 (!embedded || detail.fileData || detail.imageData) && (
@@ -1414,12 +1421,32 @@ function Detail({
                   <p className="muted">No source attached.</p>
                 )}
             </div>
-            <div className="delete-area">
+            <div className="detail-section">
+              <h3>
+                <Bookmark size={15} />
+                My notes
+              </h3>
+              <textarea
+                aria-label="My notes"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={4}
+                maxLength={8000}
+                placeholder="Why it matters. What happened next."
+              />
+              <button
+                disabled={busy || notes === detail.item.notes}
+                onClick={() => void update({ notes })}
+              >
+                Save notes
+              </button>
+            </div>
+            <div className="delete-area" ref={wipeConfirmation}>
               {confirmDelete ? (
                 <>
                   <p>
-                    Delete this drop? Its source is removed when no other drops
-                    use it.
+                    Wipe this drop permanently? This cannot be undone. Its
+                    source is removed only when no other drops use it.
                   </p>
                   <div className="actions">
                     <button
@@ -1433,6 +1460,7 @@ function Detail({
                       disabled={busy}
                       onClick={async () => {
                         setBusy(true);
+                        setError("");
                         try {
                           await client.delete(id, detail.item.revision);
                           onChange();
@@ -1443,17 +1471,18 @@ function Detail({
                         }
                       }}
                     >
-                      Delete drop
+                      {busy ? "Wiping..." : "Wipe drop"}
                     </button>
                   </div>
                 </>
               ) : (
                 <button
                   className="text-danger"
+                  disabled={busy}
                   onClick={() => setConfirmDelete(true)}
                 >
                   <Trash2 size={15} />
-                  Delete drop
+                  Wipe drop
                 </button>
               )}
             </div>

@@ -258,7 +258,7 @@ export class Library {
         throw new AppError(
           400,
           "AI_SEARCH_SIZE",
-          "AI search currently supports up to 1,000 drops at once. Narrow the category or status, or use keyword search.",
+          "AI search currently supports up to 1,000 drops at once. Narrow the pool or status.",
         );
       const docs = await this.db.query<
         SearchDocument & { keywordMatch: boolean }

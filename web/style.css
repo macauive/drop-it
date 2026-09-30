@@ -901,6 +901,12 @@ p {
   line-height: 1.7;
   color: #77838e;
 }
+.transcription {
+  margin: 16px 0;
+}
+.transcription .source-text {
+  margin-top: 12px;
+}
 .delete-area {
   padding-top: 20px;
   border-top: 1px solid var(--line);

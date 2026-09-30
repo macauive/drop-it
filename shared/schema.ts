@@ -5,7 +5,7 @@ export const categorySchema = z
   .max(120)
   .regex(
     /^[\p{L}\p{M}\p{N} &+/'().,-]+$/u,
-    "Use a short category name without special control characters.",
+    "Use a short pool name without special control characters.",
   )
   .transform((value) => value.normalize("NFKC").trim().replace(/ +/g, " "))
   .pipe(
