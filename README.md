@@ -11,7 +11,7 @@ npm ci
 npm run dev
 ```
 
-Open http://localhost:4317 and create your owner password (at least 12 characters). No AI API key, cloud database, or Docker is required. The password is hashed with Node's scrypt; sessions use HTTP-only cookies. Owner setup is allowed only from loopback while PUBLIC_URL is local. There is no public signup.
+Open http://localhost:4317 and create your owner password (at least 12 characters). No AI API key, cloud database, or Docker is required. The password is hashed with Node's scrypt using explicit N=32768, r=8, p=3 parameters; existing legacy hashes upgrade after a successful login. Sessions use HTTP-only cookies. Owner setup is allowed only from loopback while PUBLIC_URL is local. There is no public signup.
 
 `npm run dev` builds the UI once and watches server files. After UI edits, run `npm run build:web` and restart the server to load the new bundle. For a normal run after building, use `npm start`.
 
@@ -20,7 +20,7 @@ Configuration is read from `private/.env` when present; a root `.env` is not loa
 ## Implemented
 
 - Local owner setup, password login, expiring browser sessions, logout.
-- OAuth authorization-code flow with PKCE, exact redirect allowlists, rotating refresh tokens, scope checks and revocation using the official MCP SDK.
+- OAuth authorization-code flow with PKCE, exact redirect allowlists, rotating refresh tokens with family revocation on replay, scope checks and revocation using the official MCP SDK. Disconnecting also invalidates previously approved authorization codes.
 - Text/link capture and private PNG/JPEG/WebP, PDF, TXT, Markdown, CSV and JSON uploads (10 MB per file; 250 MB per-owner attachment quota). Images are limited to 25 megapixels, PDFs to 30 unencrypted pages, and UTF-8 text files to 50,000 characters. Unsupported formats, invalid content and filename traversal are rejected.
 - Original sources stored independently of editable items; multiple items may reference one source.
 - All drops contains created drops outside Trash. Saved is a bookmark filter, not a lifecycle status; yellow ribbons toggle bookmarks. New drops are created unbookmarked.
@@ -42,7 +42,7 @@ The standalone UI supports AI-assisted drafting and manual entry. Inside ChatGPT
 
 Set `OPENAI_API_KEY` in the ignored `private/.env` and restart the server to enable AI. The key stays server-side. Drafts use the Responses API with `store: false`, strict structured output and `gpt-5.6-luna` by default (`OPENAI_MODEL` can override the draft model). A draft processes up to the first 16,000 source-text characters, the URL without query/fragment, up to 100 existing category names, and an owned image resized to fit 1536 x 1536 or the complete validated PDF via [Responses file inputs](https://developers.openai.com/api/docs/guides/file-inputs). PDF page images and text can increase API usage. No tools or URL fetches are available to the model. Treat generated summaries, transcriptions (up to a 12,000-character excerpt), and detected source URLs as suggestions to review. The original file is preserved separately. A website logo or title alone is not sufficient to infer its source URL. Supplied manual URLs take precedence. Drafting never saves an item, and typed source text is not overwritten by a draft.
 
-Text files are decoded as UTF-8, never rendered as HTML or executed; JSON is parsed for validity. Original files download as attachments with `nosniff` and a sandbox CSP. PDF.js validates PDFs in a worker with a 10-second time limit, a bounded JavaScript heap and at most two concurrent checks per process. This validation is not malware scanning; treat downloaded originals as untrusted. ChatGPT-hosted file download behavior still needs live verification after deployment.
+Text files are decoded as UTF-8, never rendered as HTML or executed; JSON is parsed for validity. Original files download as attachments with `nosniff` and a sandbox CSP. Image validation allows at most two concurrent decodes per process. PDF.js validates PDFs in a worker with a 10-second time limit, a bounded JavaScript heap and at most two concurrent checks per process. This validation is not malware scanning; treat downloaded originals as untrusted. ChatGPT-hosted file download behavior still needs live verification after deployment.
 
 AI search sends the submitted query and bounded text from each matching drop (title, summary, category, tags, up to 1,000 note characters and 4,000 source-text characters, with a 6,000-character combined limit) to OpenAI's `text-embedding-3-small` model at 512 dimensions. Raw screenshots are not sent for search; their reviewed transcription can be indexed. Embeddings are cached in the local database, isolated by owner, invalidated on content edits and removed on deletion. This retrieves actual saved records, not a generated answer. Semantic matches use cosine similarity with a minimum score of 0.2, a heuristic rather than a calibrated confidence score. Literal matches across full source text, metadata and URLs are always included, rank first, and are deduplicated before pagination.
 
@@ -69,23 +69,25 @@ The local app is usable now. An actual ChatGPT connection additionally requires 
 
 Only `files.oaiusercontent.com` HTTPS file-download URLs are accepted by file import. Redirects and arbitrary external fetches are blocked. If a host supplies another legitimate file service, verify it and update the allowlist deliberately. Temporary download URLs are never saved or logged. If file transfer is unsupported in a host, the standalone UI can upload the original file directly.
 
-The standalone Export button downloads a complete JSON library; export is not exposed as a model tool. The connection icon revokes all MCP tokens without deleting saved items.
+The standalone Export button downloads a complete JSON library; export is not exposed as a model tool. JSON v2 repeats file bytes for each source referencing an attachment. Exports are rejected before loading file bodies if the conservative serialized-size estimate exceeds 384 MiB. Only one export can run per process, with at most five export requests per owner per minute; a disconnected client still holds the slot until generation finishes. The connection icon revokes all MCP tokens without deleting saved items.
 
 Live ChatGPT account linking and its file-transfer path must be verified in the user's account after an HTTPS endpoint is configured. Local protocol tests do not substitute for that final integration check.
 
 ## MCP tools
 
-| Tool            | Purpose                                                                                                                       |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `search_items`  | Search/filter the authenticated owner's library                                                                               |
-| `draft_item`    | Propose editable metadata, file transcription and a visible source URL through OpenAI; requires write scope but does not save |
-| `get_item`      | Read an item and immutable source; original file bytes are widget-only metadata                                               |
-| `save_item`     | Create an unbookmarked drop; requires a retry-stable UUID (tool name retained for compatibility)                              |
-| `update_item`   | Edit title, summary, tags, notes, category or isSaved bookmark using current revision                                         |
-| `delete_item`   | Move a drop to Trash for seven days using current revision                                                                    |
-| `restore_item`  | Restore a drop before its Trash deadline, preserving its bookmark                                                             |
-| `upload_source` | Preserve an explicitly supplied supported ChatGPT file                                                                        |
-| `get_profile`   | Return the stable authenticated owner ID                                                                                      |
+| Tool            | Purpose                                                                                                                                 |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_items`  | Search/filter the authenticated owner's library                                                                                         |
+| `draft_item`    | Propose editable metadata, file transcription and a visible source URL through OpenAI; requires read and write scopes but does not save |
+| `get_item`      | Read an item and immutable source; original file bytes are widget-only metadata                                                         |
+| `save_item`     | Create an unbookmarked drop; requires a retry-stable UUID (tool name retained for compatibility)                                        |
+| `update_item`   | Edit title, summary, tags, notes, category or isSaved bookmark using current revision                                                   |
+| `delete_item`   | Move a drop to Trash for seven days using current revision                                                                              |
+| `restore_item`  | Restore a drop before its Trash deadline, preserving its bookmark                                                                       |
+| `upload_source` | Preserve an explicitly supplied supported ChatGPT file                                                                                  |
+| `get_profile`   | Return the stable authenticated owner ID                                                                                                |
+
+The `save_item`, `update_item`, `restore_item`, and `draft_item` tools require both `library:read` and `library:write` because they return or process existing content. `upload_source` and `delete_item` require write scope; read tools require read scope.
 
 ## Development and checks
 
@@ -105,6 +107,8 @@ Additional pre-commit checks:
 - `tests/uploads.test.ts` includes encrypted PDFs (including an empty viewing password), image-only scans, simulated parser timeout recovery, concurrent validation limits and exact page/text boundaries. Synthetic PDF fixtures are kept locally; regenerating them with `tests/generate-pdf-fixtures.py` requires Pillow, ReportLab and pypdf with AES support, not production runtime dependencies.
 - `DROP_IT_LIVE_AI=1 npx tsx tests/live-ai-checks.ts` runs paid, opt-in checks with the configured project key against synthetic screenshots and a scanned PDF. It checks missing, brand-only, truncated and ambiguous URLs, address-bar precedence and scan transcription. A passing sample is not a guarantee against model errors; source URLs still need review.
 - `DROP_IT_BROWSER_TEST=1 node --import tsx tests/browser-recovery.ts` starts a separate loopback-only, automatically authenticated test instance with a temporary database and mocked AI. It never loads your environment or library. Its first draft fails with a rate limit, second with a simulated timeout, third succeeds, and fourth times out for manual-save verification. `GET /__test/state` shows only test counts. Stop it gracefully with Ctrl-C to remove the temporary data. Never deploy this test harness.
+
+When local PostgreSQL binaries are installed, `node --import tsx tests/postgres-security.ts` additionally tests the `pg` adapter in a disposable cluster with TCP disabled.
 
 ## Deliberate limits
 

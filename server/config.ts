@@ -15,7 +15,8 @@ export function loadConfig() {
     publicUrl.hostname,
   );
   if (
-    (!local && publicUrl.protocol !== "https:") ||
+    (publicUrl.protocol !== "https:" &&
+      !(local && publicUrl.protocol === "http:")) ||
     publicUrl.pathname !== "/" ||
     publicUrl.search ||
     publicUrl.hash ||
@@ -31,7 +32,10 @@ export function loadConfig() {
     .filter(Boolean)
     .map((value) => {
       const url = new URL(value.trim());
-      if (url.protocol !== "https:" && !(local && url.hostname === "localhost"))
+      if (
+        url.protocol !== "https:" &&
+        !(local && url.protocol === "http:" && url.hostname === "localhost")
+      )
         throw new Error("Invalid OAuth redirect URI.");
       if (url.hash || url.username || url.password)
         throw new Error("Invalid OAuth redirect URI.");

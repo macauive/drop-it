@@ -31,13 +31,20 @@ export function searchText(item: SearchDocument) {
     .slice(0, 6000);
 }
 export function similarity(a: number[], b: number[]) {
+  // Scale each input before multiplying so valid finite provider values cannot
+  // overflow (or underflow) the dot product and silently discard all matches.
+  const scaleA = Math.max(...a.map(Math.abs));
+  const scaleB = Math.max(...b.map(Math.abs));
+  if (!scaleA || !scaleB) return 0;
   let dot = 0,
     aa = 0,
     bb = 0;
   for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    aa += a[i] * a[i];
-    bb += b[i] * b[i];
+    const x = a[i] / scaleA;
+    const y = b[i] / scaleB;
+    dot += x * y;
+    aa += x * x;
+    bb += y * y;
   }
   return aa && bb ? dot / Math.sqrt(aa * bb) : 0;
 }

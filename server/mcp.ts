@@ -56,12 +56,26 @@ export function createMcpServer(
     run: (owner: string, args: unknown) => Promise<Record<string, unknown>>,
     extra: Record<string, unknown> = {},
   ) {
-    const required = write ? "library:write" : "library:read";
+    // These writes also return or process existing private content. A token
+    // granted only write access must not acquire read access through them.
+    const readsExisting = [
+      "save_item",
+      "update_item",
+      "restore_item",
+      "draft_item",
+    ].includes(name);
+    const required = write
+      ? readsExisting
+        ? ["library:read", "library:write"]
+        : ["library:write"]
+      : ["library:read"];
     server.registerTool(
       name,
       {
         title,
-        description,
+        description: readsExisting
+          ? `${description} Requires both read and write access.`
+          : description,
         inputSchema: schema,
         annotations: {
           readOnlyHint: !write,
@@ -75,12 +89,12 @@ export function createMcpServer(
         },
         _meta: {
           ui: { resourceUri: uri },
-          securitySchemes: [{ type: "oauth2", scopes: [required] }],
+          securitySchemes: [{ type: "oauth2", scopes: required }],
           ...extra,
         },
       },
       async (args) => {
-        if (!owner || !scopes.includes(required))
+        if (!owner || !required.every((scope) => scopes.includes(scope)))
           return {
             isError: true,
             content: [
@@ -91,7 +105,7 @@ export function createMcpServer(
             ],
             _meta: {
               "mcp/www_authenticate": [
-                `Bearer resource_metadata="${config.origin}/.well-known/oauth-protected-resource/mcp", error="insufficient_scope", error_description="Connect your Drop It account", scope="${required}"`,
+                `Bearer resource_metadata="${config.origin}/.well-known/oauth-protected-resource/mcp", error="insufficient_scope", error_description="Connect your Drop It account", scope="${required.join(" ")}"`,
               ],
             },
           };

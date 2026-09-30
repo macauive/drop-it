@@ -293,11 +293,51 @@ export function createApp(
       }),
     );
   });
-  app.get("/api/export", async (_req, res) => {
-    res
-      .attachment("drop-it-library.json")
-      .json(await library.export(res.locals.owner));
-  });
+  // Exports can include the full attachment quota. Hold the slot until the
+  // response finishes so slow downloads cannot accumulate serialized copies.
+  let exportActive = false;
+  app.get(
+    "/api/export",
+    rateLimit({
+      windowMs: 60000,
+      limit: 5,
+      keyGenerator: (_req, res) => String(res.locals.owner),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      message: { error: "Too many exports. Please wait a minute." },
+    }),
+    async (_req, res) => {
+      if (exportActive)
+        throw new AppError(
+          429,
+          "EXPORT_BUSY",
+          "An export is already running. Try again shortly.",
+        );
+      exportActive = true;
+      let buildComplete = false;
+      let responseComplete = false;
+      const release = () => {
+        if (!buildComplete || !responseComplete) return;
+        exportActive = false;
+        res.off("finish", responseEnded);
+        res.off("close", responseEnded);
+      };
+      const responseEnded = () => {
+        responseComplete = true;
+        release();
+      };
+      res.once("finish", responseEnded);
+      res.once("close", responseEnded);
+      try {
+        const exported = await library.export(res.locals.owner);
+        if (!res.destroyed)
+          res.attachment("drop-it-library.json").json(exported);
+      } finally {
+        buildComplete = true;
+        release();
+      }
+    },
+  );
   app.post(
     "/mcp",
     rateLimit({

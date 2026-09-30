@@ -33,7 +33,14 @@ export async function cleanupExpired(db: Database) {
     await tx.query("DELETE FROM sessions WHERE expires_at < now()");
     await tx.query("DELETE FROM oauth_pending WHERE expires_at < now()");
     await tx.query("DELETE FROM oauth_codes WHERE expires_at < now()");
-    await tx.query("DELETE FROM oauth_tokens WHERE expires_at < now()");
+    // A rotated token's hash remains evidence of replay for as long as a
+    // successor refresh token can keep the same family alive.
+    await tx.query(`DELETE FROM oauth_tokens expired WHERE expires_at < now()
+      AND (kind <> 'refresh_used' OR NOT EXISTS (
+        SELECT 1 FROM oauth_tokens active WHERE active.family=expired.family
+        AND active.owner=expired.owner AND active.client_id=expired.client_id
+        AND active.kind='refresh' AND active.expires_at>now()
+      ))`);
     // Abandoned uploads get a grace period; sources in use are never collected.
     await tx.query(`DELETE FROM attachments a WHERE created_at < now()-interval '24 hours'
       AND NOT EXISTS(SELECT 1 FROM sources s WHERE s.owner=a.owner AND s.attachment_id=a.id)`);

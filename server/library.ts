@@ -71,48 +71,48 @@ export class Library {
   }
   async draft(owner: string, input: unknown) {
     const { source } = draftSchema.parse(input);
-    let image: string | undefined;
-    let pdf: { filename: string; data: string } | undefined;
-    let fileText = "";
-    if (source.attachmentId) {
-      const { rows } = await this.db.query<{
-        bytes: Uint8Array;
-        mime: string;
-        filename: string;
-        original_text: string;
-      }>(
-        "SELECT bytes,mime,filename,original_text FROM attachments WHERE owner=$1 AND id=$2",
-        [owner, source.attachmentId],
-      );
-      if (!rows[0])
-        throw new AppError(404, "NOT_FOUND", "Attachment unavailable.");
-      if (isImageMime(rows[0].mime)) {
-        const preview = await sharp(Buffer.from(rows[0].bytes), {
-          limitInputPixels: 25_000_000,
-        })
-          .rotate()
-          .resize({
-            width: 1536,
-            height: 1536,
-            fit: "inside",
-            withoutEnlargement: true,
-          })
-          .jpeg({ quality: 85 })
-          .toBuffer();
-        image = `data:image/jpeg;base64,${preview.toString("base64")}`;
-      } else if (rows[0].mime === "application/pdf") {
-        pdf = {
-          filename: rows[0].filename,
-          data: `data:application/pdf;base64,${Buffer.from(rows[0].bytes).toString("base64")}`,
-        };
-      } else fileText = rows[0].original_text;
-    }
-    const { rows } = await this.db.query<{ category: string }>(
-      "SELECT category FROM items WHERE owner=$1 GROUP BY category ORDER BY count(*) DESC,category LIMIT 100",
-      [owner],
-    );
-    const url = source.url ? new URL(source.url) : null;
     return this.withAI(owner, async (ai) => {
+      let image: string | undefined;
+      let pdf: { filename: string; data: string } | undefined;
+      let fileText = "";
+      if (source.attachmentId) {
+        const { rows } = await this.db.query<{
+          bytes: Uint8Array;
+          mime: string;
+          filename: string;
+          original_text: string;
+        }>(
+          "SELECT bytes,mime,filename,original_text FROM attachments WHERE owner=$1 AND id=$2",
+          [owner, source.attachmentId],
+        );
+        if (!rows[0])
+          throw new AppError(404, "NOT_FOUND", "Attachment unavailable.");
+        if (isImageMime(rows[0].mime)) {
+          const preview = await sharp(Buffer.from(rows[0].bytes), {
+            limitInputPixels: 25_000_000,
+          })
+            .rotate()
+            .resize({
+              width: 1536,
+              height: 1536,
+              fit: "inside",
+              withoutEnlargement: true,
+            })
+            .jpeg({ quality: 85 })
+            .toBuffer();
+          image = `data:image/jpeg;base64,${preview.toString("base64")}`;
+        } else if (rows[0].mime === "application/pdf") {
+          pdf = {
+            filename: rows[0].filename,
+            data: `data:application/pdf;base64,${Buffer.from(rows[0].bytes).toString("base64")}`,
+          };
+        } else fileText = rows[0].original_text;
+      }
+      const { rows } = await this.db.query<{ category: string }>(
+        "SELECT category FROM items WHERE owner=$1 GROUP BY category ORDER BY count(*) DESC,category LIMIT 100",
+        [owner],
+      );
+      const url = source.url ? new URL(source.url) : null;
       const draft = draftResultSchema.parse(
         await ai.draft({
           text: (source.originalText || fileText).slice(0, 16000),
@@ -267,20 +267,23 @@ export class Library {
           "AI_SEARCH_SIZE",
           "AI search currently supports up to 1,000 drops at once. Narrow the pool or view.",
         );
-      const docs = await this.db.query<
-        SearchDocument & { keywordMatch: boolean }
-      >(
-        `SELECT i.id,i.revision,i.title,i.summary,i.category,i.tags,i.notes,s.original_text AS "originalText",
-        NOT EXISTS (SELECT 1 FROM unnest($${params.length + 1}::text[]) AS term
-          WHERE strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,s.original_text,s.url)),term)=0) AS "keywordMatch"
-        FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE ${filtered} ORDER BY i.id`,
-        [...params, q.query.toLowerCase().split(/\s+/).slice(0, 12)],
-      );
+      let docs: (SearchDocument & { keywordMatch: boolean })[] = [];
       let ranked: { id: string; revision: number; score: number }[];
       try {
-        ranked = await this.withAI(owner, (ai) =>
-          semanticRank(this.db, ai, owner, q.query, docs.rows),
-        );
+        ranked = await this.withAI(owner, async (ai) => {
+          // Loading full source documents is part of the bounded AI work too.
+          const result = await this.db.query<
+            SearchDocument & { keywordMatch: boolean }
+          >(
+            `SELECT i.id,i.revision,i.title,i.summary,i.category,i.tags,i.notes,s.original_text AS "originalText",
+            NOT EXISTS (SELECT 1 FROM unnest($${params.length + 1}::text[]) AS term
+              WHERE strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,s.original_text,s.url)),term)=0) AS "keywordMatch"
+            FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE ${filtered} ORDER BY i.id`,
+            [...params, q.query.toLowerCase().split(/\s+/).slice(0, 12)],
+          );
+          docs = result.rows;
+          return semanticRank(this.db, ai, owner, q.query, docs);
+        });
       } catch (error) {
         if (
           q.mode === "hybrid" &&
@@ -293,7 +296,7 @@ export class Library {
         throw error;
       }
       const byRank = new Map(ranked.map((entry) => [entry.id, entry]));
-      for (const doc of docs.rows) {
+      for (const doc of docs) {
         if (doc.keywordMatch) {
           const entry = byRank.get(doc.id);
           byRank.set(doc.id, {
@@ -573,6 +576,33 @@ export class Library {
     return this.db.transaction(async (tx) => {
       // Share the owner lock used by saves/deletes for a consistent export.
       await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [owner]);
+      // v2 includes a file copy per source, even when several sources reuse the
+      // same attachment. Bound that amplification before fetching any bytes.
+      // Six bytes per text byte safely covers JSON escaping; the fixed allowance
+      // covers keys, IDs, dates, booleans, and tag separators.
+      const size = await tx.query<{ bytes: string }>(
+        `SELECT
+          COALESCE((SELECT sum(2048::bigint + 6 * (
+            octet_length(i.title)::bigint + octet_length(i.summary) + octet_length(i.category)
+            + octet_length(array_to_string(i.tags,'')) + octet_length(i.notes) + octet_length(s.url)
+          )) FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner
+          WHERE i.owner=$1 AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days')),0)
+          + COALESCE((SELECT sum(2048::bigint + 6 * (
+            octet_length(s.original_text)::bigint + octet_length(s.url)
+            + COALESCE(octet_length(a.filename),0) + COALESCE(octet_length(a.mime),0)
+          ) + 4 * ((COALESCE(octet_length(a.bytes),0)::bigint + 2) / 3))
+          FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner
+          WHERE s.owner=$1 AND EXISTS(SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id
+            AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days'))),0)
+          + 1024 AS bytes`,
+        [owner],
+      );
+      if (Number(size.rows[0].bytes) > 384 * 1024 * 1024)
+        throw new AppError(
+          413,
+          "EXPORT_SIZE",
+          "This library exceeds the size limit for a single JSON export.",
+        );
       const items = await tx.query<Item>(
         `${selection} WHERE i.owner=$1 AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days') ORDER BY i.created_at`,
         [owner],

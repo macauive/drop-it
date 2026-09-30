@@ -5,7 +5,6 @@ import {
   timingSafeEqual,
   createHash,
 } from "node:crypto";
-import { promisify } from "node:util";
 import type { Response } from "express";
 import type {
   OAuthServerProvider,
@@ -27,7 +26,50 @@ import type { Config } from "./config.js";
 import { digest } from "./library.js";
 import { AppError } from "./errors.js";
 
-const derive = promisify(scrypt);
+// OWASP's 32 MiB scrypt profile; only these explicit profiles are accepted.
+const passwordProfile = { N: 32768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 };
+const legacyPasswordProfile = {
+  N: 16384,
+  r: 8,
+  p: 1,
+  maxmem: 32 * 1024 * 1024,
+};
+const passwordHashPrefix = "scrypt$1$32768$8$3";
+const currentPasswordHash =
+  /^scrypt\$1\$32768\$8\$3\$([a-f0-9]{32})\$([a-f0-9]{128})$/;
+const legacyPasswordHash = /^([a-f0-9]{32}):([a-f0-9]{128})$/;
+let activePasswordJobs = 0;
+const passwordQueue: Array<() => void> = [];
+
+async function derivePassword(password: string, salt: string, legacy = false) {
+  // Two simultaneous derivations keep normal scrypt memory near 64 MiB total.
+  // A bounded queue also prevents distributed requests retaining passwords
+  // indefinitely while the existing HTTP sign-in limiter handles each IP.
+  if (activePasswordJobs >= 2) {
+    if (passwordQueue.length >= 8)
+      throw new AppError(
+        503,
+        "AUTH_BUSY",
+        "Sign-in is busy. Please try again shortly.",
+      );
+    await new Promise<void>((resolve) => passwordQueue.push(resolve));
+  } else activePasswordJobs++;
+  try {
+    return await new Promise<Buffer>((resolve, reject) => {
+      scrypt(
+        password,
+        salt,
+        64,
+        legacy ? legacyPasswordProfile : passwordProfile,
+        (error, result) => (error ? reject(error) : resolve(result)),
+      );
+    });
+  } finally {
+    const next = passwordQueue.shift();
+    if (next) next();
+    else activePasswordJobs--;
+  }
+}
 const secret = () => randomBytes(32).toString("base64url");
 const scopesAllowed = ["library:read", "library:write"];
 type StoredParams = Omit<AuthorizationParams, "resource"> & {
@@ -37,6 +79,7 @@ type Grant = { owner: string; client_id: string; params: StoredParams };
 type TokenRow = {
   owner: string;
   client_id: string;
+  kind: string;
   scopes: string[];
   resource: string;
   family: string;
@@ -45,14 +88,19 @@ type TokenRow = {
 
 export async function hashPassword(password: string) {
   const salt = randomBytes(16).toString("hex");
-  const hash = (await derive(password, salt, 64)) as Buffer;
-  return `${salt}:${hash.toString("hex")}`;
+  const hash = await derivePassword(password, salt);
+  return `${passwordHashPrefix}$${salt}$${hash.toString("hex")}`;
 }
 async function verifyPassword(password: string, encoded: string) {
-  const [salt, hash] = encoded.split(":");
-  const actual = (await derive(password, salt, 64)) as Buffer;
-  const expected = Buffer.from(hash, "hex");
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+  const current = currentPasswordHash.exec(encoded);
+  const parsed = current ?? legacyPasswordHash.exec(encoded);
+  if (!parsed) return { valid: false, needsUpgrade: false };
+  const actual = await derivePassword(password, parsed[1], !current);
+  const expected = Buffer.from(parsed[2], "hex");
+  return {
+    valid: timingSafeEqual(expected, actual),
+    needsUpgrade: !current,
+  };
 }
 
 export class Auth implements OAuthServerProvider {
@@ -130,9 +178,20 @@ export class Auth implements OAuthServerProvider {
     const { rows } = await this.db.query<{ id: string; password_hash: string }>(
       "SELECT id,password_hash FROM users WHERE singleton=true LIMIT 1",
     );
-    if (!rows[0] || !(await verifyPassword(password, rows[0].password_hash)))
+    const user = rows[0];
+    const verification =
+      user && (await verifyPassword(password, user.password_hash));
+    if (!verification?.valid)
       throw new AppError(401, "LOGIN_FAILED", "The password was not accepted.");
-    return this.session(rows[0].id);
+    if (verification.needsUpgrade) {
+      const upgraded = await hashPassword(password);
+      // Concurrent successful logins must not overwrite a newer credential.
+      await this.db.query(
+        "UPDATE users SET password_hash=$1 WHERE id=$2 AND password_hash=$3",
+        [upgraded, user.id, user.password_hash],
+      );
+    }
+    return this.session(user.id);
   }
   async session(owner: string) {
     const token = secret();
@@ -199,6 +258,7 @@ export class Auth implements OAuthServerProvider {
   }
   async consent(owner: string, id: string, approved: boolean) {
     return this.db.transaction(async (tx) => {
+      await this.lockOwner(tx, owner);
       const { rows } = await tx.query<{
         client_id: string;
         params: StoredParams;
@@ -243,6 +303,15 @@ export class Auth implements OAuthServerProvider {
     resource?: URL,
   ) {
     return this.db.transaction(async (tx) => {
+      const original = await tx.query<{ owner: string }>(
+        "SELECT owner FROM oauth_codes WHERE hash=$1 AND client_id=$2 AND expires_at>now()",
+        [digest(code), client.client_id],
+      );
+      if (!original.rows[0])
+        throw new InvalidGrantError(
+          "Authorization code is invalid or expired.",
+        );
+      await this.lockOwner(tx, original.rows[0].owner);
       const { rows } = await tx.query<Grant>(
         "SELECT owner,client_id,params FROM oauth_codes WHERE hash=$1 AND client_id=$2 AND expires_at>now() FOR UPDATE",
         [digest(code), client.client_id],
@@ -300,26 +369,51 @@ export class Auth implements OAuthServerProvider {
       scope: scopes.join(" "),
     };
   }
+  private async lockOwner(tx: Queryable, owner: string) {
+    // Issuance and revocation share this lock so a concurrent exchange cannot
+    // recreate credentials after the owner's disconnect has completed.
+    await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [owner]);
+  }
   async exchangeRefreshToken(
     client: OAuthClientInformationFull,
     refresh: string,
     scopes?: string[],
     resource?: URL,
   ) {
-    return this.db.transaction(async (tx) => {
+    const result = await this.db.transaction(async (tx) => {
+      const original = await tx.query<{ owner: string }>(
+        "SELECT owner FROM oauth_tokens WHERE hash=$1 AND client_id=$2 AND kind IN ('refresh','refresh_used')",
+        [digest(refresh), client.client_id],
+      );
+      if (!original.rows[0])
+        throw new InvalidGrantError("Refresh token or resource is invalid.");
+      await this.lockOwner(tx, original.rows[0].owner);
       const { rows } = await tx.query<TokenRow>(
-        "SELECT * FROM oauth_tokens WHERE hash=$1 AND client_id=$2 AND kind='refresh' AND expires_at>now() FOR UPDATE",
+        "SELECT * FROM oauth_tokens WHERE hash=$1 AND client_id=$2 AND kind IN ('refresh','refresh_used') AND (kind='refresh_used' OR expires_at>now()) FOR UPDATE",
         [digest(refresh), client.client_id],
       );
       const grant = rows[0];
       if (!grant || resource?.href !== grant.resource)
         throw new InvalidGrantError("Refresh token or resource is invalid.");
+      if (grant.kind === "refresh_used") {
+        await tx.query(
+          "DELETE FROM oauth_tokens WHERE family=$1 AND owner=$2 AND client_id=$3",
+          [grant.family, grant.owner, grant.client_id],
+        );
+        // Return instead of throwing here, so the family revocation commits.
+        return undefined;
+      }
       const requested = scopes ?? grant.scopes;
       if (requested.some((scope) => !grant.scopes.includes(scope)))
         throw new InvalidScopeError("A refresh cannot add scopes.");
-      await tx.query("DELETE FROM oauth_tokens WHERE family=$1", [
-        grant.family,
-      ]);
+      await tx.query(
+        "DELETE FROM oauth_tokens WHERE family=$1 AND owner=$2 AND client_id=$3 AND kind='access'",
+        [grant.family, grant.owner, grant.client_id],
+      );
+      await tx.query(
+        "UPDATE oauth_tokens SET kind='refresh_used' WHERE hash=$1 AND owner=$2 AND client_id=$3",
+        [digest(refresh), grant.owner, grant.client_id],
+      );
       return this.issue(
         tx,
         grant.owner,
@@ -328,6 +422,9 @@ export class Auth implements OAuthServerProvider {
         grant.family,
       );
     });
+    if (!result)
+      throw new InvalidGrantError("Refresh token or resource is invalid.");
+    return result;
   }
   async verifyAccessToken(token: string) {
     if (token.length > 100)
@@ -352,12 +449,25 @@ export class Auth implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     request: OAuthTokenRevocationRequest,
   ) {
-    await this.db.query(
-      "DELETE FROM oauth_tokens WHERE client_id=$1 AND family IN (SELECT family FROM oauth_tokens WHERE hash=$2 AND client_id=$1)",
-      [client.client_id, digest(request.token)],
-    );
+    await this.db.transaction(async (tx) => {
+      const { rows } = await tx.query<{ owner: string }>(
+        "SELECT owner FROM oauth_tokens WHERE hash=$1 AND client_id=$2",
+        [digest(request.token), client.client_id],
+      );
+      if (!rows[0]) return;
+      const owner = rows[0].owner;
+      await this.lockOwner(tx, owner);
+      await tx.query(
+        "DELETE FROM oauth_tokens WHERE owner=$1 AND client_id=$2 AND family IN (SELECT family FROM oauth_tokens WHERE hash=$3 AND owner=$1 AND client_id=$2)",
+        [owner, client.client_id, digest(request.token)],
+      );
+    });
   }
   async revokeAll(owner: string) {
-    await this.db.query("DELETE FROM oauth_tokens WHERE owner=$1", [owner]);
+    await this.db.transaction(async (tx) => {
+      await this.lockOwner(tx, owner);
+      await tx.query("DELETE FROM oauth_codes WHERE owner=$1", [owner]);
+      await tx.query("DELETE FROM oauth_tokens WHERE owner=$1", [owner]);
+    });
   }
 }

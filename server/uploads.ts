@@ -24,6 +24,7 @@ const invalid = () =>
     "Choose a valid image, PDF, TXT, Markdown, CSV, or JSON file.",
   );
 let activePdfChecks = 0;
+let activeImageChecks = 0;
 
 async function validatePdf(bytes: Buffer) {
   if (!bytes.subarray(0, 8).toString("ascii").startsWith("%PDF-"))
@@ -100,6 +101,14 @@ export async function validateUpload(
     throw invalid();
   let originalText = "";
   if (isImageMime(mime)) {
+    // Pixel limits bound one decode; also bound simultaneous native allocations.
+    if (activeImageChecks >= 2)
+      throw new AppError(
+        429,
+        "FILE_BUSY",
+        "Image processing is busy. Try again shortly.",
+      );
+    activeImageChecks++;
     try {
       const image = sharp(bytes, {
         limitInputPixels: 25_000_000,
@@ -122,6 +131,8 @@ export async function validateUpload(
         "INVALID_IMAGE",
         "Choose a valid, single-frame PNG, JPEG, or WebP image under 25 megapixels.",
       );
+    } finally {
+      activeImageChecks--;
     }
   } else if (mime === "application/pdf") {
     await validatePdf(bytes);
