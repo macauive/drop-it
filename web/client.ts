@@ -7,6 +7,7 @@ import type {
   SaveInput,
   DraftResult,
 } from "../shared/schema.js";
+import { fileMime } from "../shared/files.js";
 
 type FileRef = { fileId: string; fileName?: string; mimeType?: string };
 declare global {
@@ -28,7 +29,12 @@ export class ClientError extends Error {
     super(message);
   }
 }
-type Detail = { item: Item; source: Source; imageData?: string };
+type Detail = {
+  item: Item;
+  source: Source;
+  imageData?: string;
+  fileData?: string;
+};
 type ToolResponse = {
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
@@ -84,6 +90,9 @@ async function call<T>(
     ...(typeof result._meta?.imageData === "string"
       ? { imageData: result._meta.imageData }
       : {}),
+    ...(typeof result._meta?.fileData === "string"
+      ? { fileData: result._meta.fileData }
+      : {}),
   } as T;
 }
 export async function api<T>(
@@ -128,11 +137,13 @@ export const client = {
     embedded
       ? call("delete_item", { id, revision })
       : api(`/api/items/${id}`, "DELETE", { revision }),
-  upload: async (file: File): Promise<{ attachmentId: string }> => {
+  upload: async (
+    file: File,
+  ): Promise<{ attachmentId: string; originalText: string }> => {
     if (embedded) {
       if (!window.openai?.uploadFile || !window.openai.getFileDownloadUrl)
         throw new Error(
-          "Attach the screenshot to your ChatGPT message and ask Drop It to save it.",
+          "Attach the file to your ChatGPT message and ask Drop It to save it.",
         );
       const ref = await window.openai.uploadFile(file);
       const { downloadUrl } = await window.openai.getFileDownloadUrl({
@@ -143,14 +154,17 @@ export const client = {
           download_url: downloadUrl,
           file_id: ref.fileId,
           filename: file.name,
-          mime_type: file.type,
+          mime_type: fileMime(file.name) ?? "application/octet-stream",
         },
       });
     }
     const response = await fetch("/api/attachments", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": file.type },
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-File-Name": encodeURIComponent(file.name),
+      },
       body: file,
     });
     const result = await response.json();

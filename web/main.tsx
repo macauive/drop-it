@@ -34,6 +34,12 @@ import {
   type SearchResult,
 } from "../shared/schema.js";
 import { api, client, ClientError, embedded } from "./client.js";
+import {
+  fileAccept,
+  fileMime,
+  isImageMime,
+  maxFileBytes,
+} from "../shared/files.js";
 import "./style.css";
 
 const message = (error: unknown) =>
@@ -821,7 +827,11 @@ function Capture({
   const [drafted, setDrafted] = useState(false),
     [drafting, setDrafting] = useState(false);
   const [manual, setManual] = useState(false);
-  const upload = useRef<{ file: File; id: string } | null>(null);
+  const upload = useRef<{
+    file: File;
+    id: string;
+    originalText: string;
+  } | null>(null);
   const attempt = useRef<{ signature: string; requestId: string } | null>(null);
   useEffect(
     () => () => {
@@ -832,15 +842,16 @@ function Capture({
   const pick = (next: File | undefined) => {
     if (busy) return;
     if (!next) return;
-    if (
-      !["image/png", "image/jpeg", "image/webp"].includes(next.type) ||
-      next.size > 10 * 1024 * 1024
-    ) {
-      setError("Choose a PNG, JPEG, or WebP image under 10 MB.");
+    if (!fileMime(next.name) || !next.size || next.size > maxFileBytes) {
+      setError(
+        "Choose an image, PDF, TXT, Markdown, CSV, or JSON file under 10 MB.",
+      );
       return;
     }
     setFile(next);
-    setPreview(URL.createObjectURL(next));
+    setPreview(
+      isImageMime(fileMime(next.name) ?? "") ? URL.createObjectURL(next) : "",
+    );
     setError("");
     if (!manual) {
       setDrafted(false);
@@ -849,34 +860,46 @@ function Capture({
       setCategory("");
       setTags("");
       setText("");
+      setUrl("");
       if (aiAvailable) void draft(next);
     }
   };
-  const sourceInput = async (selected = file, screenshotOnly = false) => {
+  const sourceInput = async (selected = file, fileOnly = false) => {
     if (selected && upload.current?.file !== selected) {
       const result = await client.upload(selected);
-      upload.current = { file: selected, id: result.attachmentId };
+      upload.current = {
+        file: selected,
+        id: result.attachmentId,
+        originalText: result.originalText,
+      };
     }
     return {
-      originalText: screenshotOnly ? "" : text,
-      url: screenshotOnly ? "" : url,
+      originalText:
+        (fileOnly ? "" : text) ||
+        (selected ? (upload.current?.originalText ?? "") : ""),
+      url: fileOnly ? "" : url,
       attachmentId: selected ? upload.current?.id : undefined,
     };
   };
-  const draft = async (screenshot?: File) => {
+  const draft = async (sourceFile?: File) => {
     setBusy(true);
     setDrafting(true);
     setError("");
     setDuplicate(false);
     try {
+      const selected = sourceFile ?? file;
       const { draft } = await client.draft(
-        await sourceInput(screenshot ?? file, Boolean(screenshot)),
+        await sourceInput(selected, Boolean(sourceFile)),
       );
       setTitle(draft.title);
       setSummary(draft.summary);
       setCategory(draft.category);
       setTags(draft.tags.join(", "));
-      if (screenshot || !text.trim()) setText(draft.extractedText);
+      if (sourceFile || !text.trim())
+        setText(
+          (selected ? upload.current?.originalText : "") || draft.extractedText,
+        );
+      if (sourceFile || !url.trim()) setUrl(draft.sourceUrl);
       setDrafted(true);
     } catch (error) {
       setError(message(error));
@@ -941,20 +964,20 @@ function Capture({
             }}
           >
             {file && preview ? (
-              <img src={preview} alt="Selected screenshot" />
+              <img src={preview} alt="Selected image" />
             ) : (
               <>
-                <ImageIcon size={27} />
-                <span>Add a screenshot</span>
+                <FileText size={27} />
+                <span>{file ? file.name : "Drop a file"}</span>
                 <span className="field-note">
-                  PNG, JPEG, WebP · Up to 10 MB
+                  Images, PDF, TXT, Markdown, CSV, JSON · Up to 10 MB
                 </span>
               </>
             )}
             <input
               type="file"
-              accept="image/png,image/jpeg,image/webp"
-              aria-label="Upload screenshot"
+              accept={fileAccept}
+              aria-label="Drop a file"
               onChange={(e) => pick(e.target.files?.[0])}
             />
           </label>
@@ -964,10 +987,11 @@ function Capture({
               <button
                 type="button"
                 className="icon-button"
-                aria-label="Remove screenshot"
+                aria-label="Remove file"
                 onClick={() => {
                   setFile(null);
                   setPreview("");
+                  upload.current = null;
                   if (!manual) {
                     setDrafted(false);
                     setTitle("");
@@ -975,6 +999,7 @@ function Capture({
                     setCategory("");
                     setTags("");
                     setText("");
+                    setUrl("");
                   }
                 }}
               >
@@ -991,10 +1016,7 @@ function Capture({
                 </div>
               )}
               {drafted && (
-                <section
-                  className="draft-preview"
-                  aria-label="Screenshot draft"
-                >
+                <section className="draft-preview" aria-label="File draft">
                   <span className="field-note">AI draft · Not saved</span>
                   <h3>{title}</h3>
                   <p>{summary}</p>
@@ -1004,6 +1026,18 @@ function Capture({
                       .join(" · ")}
                   </span>
                 </section>
+              )}
+              {drafted && (
+                <label>
+                  Source link
+                  <input
+                    type="url"
+                    value={url}
+                    placeholder="https://"
+                    maxLength={2048}
+                    onChange={(event) => setUrl(event.target.value)}
+                  />
+                </label>
               )}
               <div className="draft-actions">
                 <button type="button" onClick={() => setManual(true)}>
@@ -1019,7 +1053,7 @@ function Capture({
               {!drafted && !drafting && (
                 <span className="field-note">
                   {aiAvailable
-                    ? "Screenshots are processed with OpenAI."
+                    ? "Files are processed with OpenAI. PDFs: up to 30 pages. Text: up to 50,000 characters."
                     : "AI is unavailable. Enter details manually."}
                 </span>
               )}
@@ -1038,11 +1072,11 @@ function Capture({
                 />
               </label>
               <label>
-                Text / screenshot transcription
+                Text / file transcription
                 <textarea
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder="Paste a passage, a quick idea, or screenshot text..."
+                  placeholder="Paste a passage, a quick idea, or source text..."
                   maxLength={50000}
                   rows={4}
                 />
@@ -1154,6 +1188,7 @@ function Detail({
       item: Item;
       source: Source;
       imageData?: string;
+      fileData?: string;
     } | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
@@ -1188,7 +1223,11 @@ function Detail({
         revision: detail.item.revision,
         ...fields,
       });
-      setDetail({ ...result, imageData: detail.imageData });
+      setDetail({
+        ...result,
+        imageData: detail.imageData,
+        fileData: detail.fileData,
+      });
       setEditing(false);
       onChange();
     } catch (e) {
@@ -1354,8 +1393,23 @@ function Detail({
               {detail.source.originalText && (
                 <pre className="source-text">{detail.source.originalText}</pre>
               )}
+              {detail.source.hasFile &&
+                (!embedded || detail.fileData || detail.imageData) && (
+                  <a
+                    className="source-link"
+                    href={
+                      embedded
+                        ? (detail.fileData ?? detail.imageData)
+                        : `/api/sources/${detail.source.id}/file`
+                    }
+                    download={detail.source.filename ?? "source"}
+                  >
+                    <ArrowDownToLine size={15} />
+                    <span>{detail.source.filename ?? "Download original"}</span>
+                  </a>
+                )}
               {!detail.source.url &&
-                !detail.source.hasImage &&
+                !detail.source.hasFile &&
                 !detail.source.originalText && (
                   <p className="muted">No source attached.</p>
                 )}

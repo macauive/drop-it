@@ -134,4 +134,18 @@ export async function migrate(db: Database) {
     )`);
     await tx.query("INSERT INTO schema_migrations(version) VALUES(3)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=4"))
+        .rows.length
+    )
+      return;
+    await tx.query(
+      "ALTER TABLE attachments ADD COLUMN filename text NOT NULL DEFAULT 'source', ADD COLUMN original_text text NOT NULL DEFAULT ''",
+    );
+    await tx.query(
+      "UPDATE attachments SET filename=CASE mime WHEN 'image/png' THEN 'source.png' WHEN 'image/jpeg' THEN 'source.jpg' WHEN 'image/webp' THEN 'source.webp' ELSE 'source' END",
+    );
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(4)");
+  });
 }

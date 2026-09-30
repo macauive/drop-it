@@ -58,7 +58,7 @@ export const draftSchema = z
   .refine(
     ({ source }) =>
       Boolean(source.originalText.trim() || source.url || source.attachmentId),
-    "Add text, a link, or a screenshot first.",
+    "Add text, a link, or a file first.",
   );
 export const draftResultSchema = z
   .object({
@@ -67,6 +67,7 @@ export const draftResultSchema = z
     category: categorySchema,
     tags: z.array(z.string().trim().min(1).max(40)).max(12),
     extractedText: z.string().max(12000),
+    sourceUrl: z.union([urlSchema, z.literal("")]).default(""),
   })
   .strict();
 export type DraftResult = z.infer<typeof draftResultSchema>;
@@ -119,7 +120,17 @@ export const fileParamSchema = z
     download_url: z.string().url().max(4096),
     file_id: z.string().min(1).max(300),
     filename: z.string().max(255),
-    mime_type: z.enum(["image/png", "image/jpeg", "image/webp"]),
+    mime_type: z.enum([
+      "image/png",
+      "image/jpeg",
+      "image/webp",
+      "application/pdf",
+      "text/plain",
+      "text/markdown",
+      "text/csv",
+      "application/json",
+      "application/octet-stream",
+    ]),
   })
   .strict();
 export type SaveInput = z.input<typeof saveSchema>;
@@ -145,6 +156,9 @@ export type Source = {
   url: string;
   createdAt: string;
   hasImage: boolean;
+  hasFile: boolean;
+  filename: string | null;
+  mime: string | null;
 };
 export type SearchResult = {
   items: Item[];

@@ -100,7 +100,10 @@ export function createApp(
     }
     next();
   });
-  app.use("/api", express.json({ limit: "100kb" }));
+  const jsonBody = express.json({ limit: "512kb" });
+  app.use("/api", (req, res, next) =>
+    req.path === "/attachments" ? next() : jsonBody(req, res, next),
+  );
   const loginLimiter = rateLimit({
     windowMs: 15 * 60000,
     limit: 10,
@@ -183,16 +186,20 @@ export function createApp(
   app.post(
     "/api/attachments",
     express.raw({
-      type: ["image/png", "image/jpeg", "image/webp"],
+      type: () => true,
       limit: "10mb",
     }),
     async (req, res) => {
       if (!Buffer.isBuffer(req.body))
-        throw new AppError(
-          400,
-          "INVALID_IMAGE",
-          "Choose a PNG, JPEG, or WebP image.",
-        );
+        throw new AppError(400, "INVALID_FILE", "Choose a supported file.");
+      let filename: string | undefined;
+      try {
+        const header = req.get("X-File-Name");
+        filename =
+          header === undefined ? undefined : decodeURIComponent(header);
+      } catch {
+        throw new AppError(400, "INVALID_FILE", "The filename is invalid.");
+      }
       res
         .status(201)
         .json(
@@ -200,10 +207,22 @@ export function createApp(
             res.locals.owner,
             req.body,
             req.headers["content-type"] ?? "",
+            filename,
           ),
         );
     },
   );
+  app.get("/api/sources/:id/file", async (req, res) => {
+    const file = await library.file(
+      res.locals.owner,
+      idSchema.parse(req.params.id),
+    );
+    res
+      .attachment(file.filename)
+      .type(file.mime)
+      .set("Content-Security-Policy", "sandbox")
+      .send(file.bytes);
+  });
   app.get("/api/sources/:id/image", async (req, res) => {
     const image = await library.image(
       res.locals.owner,

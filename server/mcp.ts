@@ -137,7 +137,7 @@ export function createMcpServer(
   tool(
     "draft_item",
     "Draft a drop with AI",
-    "Create an editable draft from supplied text, a link, or an owned uploaded screenshot using OpenAI. Does not save an item. Review the draft before save_item. URLs are not fetched and screenshot transcription is inferred, not the immutable original.",
+    "Create an editable draft from text, a link, or an owned image/PDF/text file using OpenAI. Does not save an item. Review the draft including sourceUrl before save_item, and pass an accepted sourceUrl as source.url. URLs are never fetched. Transcription is inferred, not the immutable original. Never infer a website URL from a brand or logo alone.",
     draftSchema,
     true,
     false,
@@ -153,15 +153,16 @@ export function createMcpServer(
     async (owner, args) => {
       const { id } = z.object({ id: idSchema }).parse(args);
       const result = await library.get(owner, id);
-      const image = result.source.hasImage
-        ? await library.image(owner, result.source.id)
+      const file = result.source.hasFile
+        ? await library.file(owner, result.source.id)
         : null;
       return {
         ...result,
-        ...(image
+        ...(file
           ? {
               _meta: {
-                imageData: `data:${image.mime};base64,${image.bytes.toString("base64")}`,
+                [result.source.hasImage ? "imageData" : "fileData"]:
+                  `data:${file.mime};base64,${file.bytes.toString("base64")}`,
               },
             }
           : {}),
@@ -197,8 +198,8 @@ export function createMcpServer(
   );
   tool(
     "upload_source",
-    "Preserve screenshot",
-    "Use this before saving a user-provided screenshot. It stores the original image privately and returns attachmentId for save_item. It does not extract text; provide the image transcription separately when saving.",
+    "Preserve source file",
+    "Use this before saving a user-provided PNG, JPEG, WebP, PDF, TXT, Markdown, CSV or JSON file. Stores the original privately and returns attachmentId and text-file originalText for save_item. Maximum 10 MB; PDFs must be unencrypted with at most 30 pages; text files must be UTF-8 and at most 50,000 characters. Use draft_item to infer image/PDF transcription and a visible website sourceUrl for review.",
     z.object({ file: fileParamSchema }).strict(),
     true,
     false,

@@ -17,12 +17,14 @@ import {
 import { AppError } from "./errors.js";
 import type { AIProvider } from "./ai.js";
 import { semanticRank, type SearchDocument } from "./semantic.js";
+import { validateUpload } from "./uploads.js";
+import { isImageMime } from "../shared/files.js";
 
 export const digest = (value: string | Buffer) =>
   createHash("sha256").update(value).digest("hex");
 const selection = `SELECT i.id, i.source_id AS "sourceId", i.title, i.summary, i.category, i.status,
   i.tags, i.notes, i.revision, i.created_at AS "createdAt", i.updated_at AS "updatedAt",
-  s.url AS "sourceUrl", s.attachment_id IS NOT NULL AS "hasImage"
+  s.url AS "sourceUrl", EXISTS(SELECT 1 FROM attachments a WHERE a.id=s.attachment_id AND a.owner=s.owner AND a.mime IN ('image/png','image/jpeg','image/webp')) AS "hasImage"
   FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner`;
 export class Library {
   constructor(
@@ -69,26 +71,40 @@ export class Library {
   async draft(owner: string, input: unknown) {
     const { source } = draftSchema.parse(input);
     let image: string | undefined;
+    let pdf: { filename: string; data: string } | undefined;
+    let fileText = "";
     if (source.attachmentId) {
-      const { rows } = await this.db.query<{ bytes: Uint8Array }>(
-        "SELECT bytes FROM attachments WHERE owner=$1 AND id=$2",
+      const { rows } = await this.db.query<{
+        bytes: Uint8Array;
+        mime: string;
+        filename: string;
+        original_text: string;
+      }>(
+        "SELECT bytes,mime,filename,original_text FROM attachments WHERE owner=$1 AND id=$2",
         [owner, source.attachmentId],
       );
       if (!rows[0])
         throw new AppError(404, "NOT_FOUND", "Attachment unavailable.");
-      const preview = await sharp(Buffer.from(rows[0].bytes), {
-        limitInputPixels: 25_000_000,
-      })
-        .rotate()
-        .resize({
-          width: 1536,
-          height: 1536,
-          fit: "inside",
-          withoutEnlargement: true,
+      if (isImageMime(rows[0].mime)) {
+        const preview = await sharp(Buffer.from(rows[0].bytes), {
+          limitInputPixels: 25_000_000,
         })
-        .jpeg({ quality: 85 })
-        .toBuffer();
-      image = `data:image/jpeg;base64,${preview.toString("base64")}`;
+          .rotate()
+          .resize({
+            width: 1536,
+            height: 1536,
+            fit: "inside",
+            withoutEnlargement: true,
+          })
+          .jpeg({ quality: 85 })
+          .toBuffer();
+        image = `data:image/jpeg;base64,${preview.toString("base64")}`;
+      } else if (rows[0].mime === "application/pdf") {
+        pdf = {
+          filename: rows[0].filename,
+          data: `data:application/pdf;base64,${Buffer.from(rows[0].bytes).toString("base64")}`,
+        };
+      } else fileText = rows[0].original_text;
     }
     const { rows } = await this.db.query<{ category: string }>(
       "SELECT category FROM items WHERE owner=$1 GROUP BY category ORDER BY count(*) DESC,category LIMIT 100",
@@ -98,10 +114,11 @@ export class Library {
     return this.withAI(owner, async (ai) => {
       const draft = draftResultSchema.parse(
         await ai.draft({
-          text: source.originalText.slice(0, 16000),
+          text: (source.originalText || fileText).slice(0, 16000),
           url: url ? `${url.origin}${url.pathname}` : "",
           categories: rows.map((row) => categorySchema.parse(row.category)),
           image,
+          pdf,
         }),
       );
       draft.category = await this.canonicalCategory(
@@ -109,6 +126,7 @@ export class Library {
         draft.category,
         this.db,
       );
+      if (source.url) draft.sourceUrl = source.url;
       return { draft };
     });
   }
@@ -123,37 +141,17 @@ export class Library {
     );
     return categorySchema.parse(rows[0]?.category ?? category);
   }
-  async upload(owner: string, bytes: Buffer, declaredMime: string) {
-    if (!bytes.length || bytes.length > 10 * 1024 * 1024)
-      throw new AppError(413, "FILE_SIZE", "Choose an image under 10 MB.");
-    let mime: string;
-    try {
-      const image = sharp(bytes, {
-        limitInputPixels: 25_000_000,
-        animated: true,
-        failOn: "warning",
-      });
-      const metadata = await image.metadata();
-      mime = (
-        { png: "image/png", jpeg: "image/jpeg", webp: "image/webp" } as Record<
-          string,
-          string
-        >
-      )[metadata.format ?? ""];
-      if (
-        !mime ||
-        (metadata.pages && metadata.pages > 1) ||
-        mime !== declaredMime
-      )
-        throw new Error("Invalid image");
-      await image.stats();
-    } catch {
-      throw new AppError(
-        400,
-        "INVALID_IMAGE",
-        "Choose a valid, single-frame PNG, JPEG, or WebP image under 25 megapixels.",
-      );
-    }
+  async upload(
+    owner: string,
+    bytes: Buffer,
+    declaredMime: string,
+    name?: string,
+  ) {
+    const { mime, filename, originalText } = await validateUpload(
+      bytes,
+      declaredMime,
+      name,
+    );
     const id = randomUUID();
     await this.db.transaction(async (tx) => {
       await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [owner]);
@@ -168,11 +166,11 @@ export class Library {
           "Your 250 MB attachment limit has been reached.",
         );
       await tx.query(
-        "INSERT INTO attachments(id,owner,bytes,mime,digest) VALUES($1,$2,$3,$4,$5)",
-        [id, owner, bytes, mime, digest(bytes)],
+        "INSERT INTO attachments(id,owner,bytes,mime,digest,filename,original_text) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        [id, owner, bytes, mime, digest(bytes), filename, originalText],
       );
     });
-    return { attachmentId: id };
+    return { attachmentId: id, originalText };
   }
   async get(owner: string, id: string, tx: Queryable = this.db) {
     idSchema.parse(id);
@@ -183,18 +181,32 @@ export class Library {
     if (!rows[0])
       throw new AppError(404, "NOT_FOUND", "This item is no longer available.");
     const result = await tx.query<Source & { attachmentId: string | null }>(
-      `SELECT id, original_text AS "originalText", url, created_at AS "createdAt", attachment_id AS "attachmentId", attachment_id IS NOT NULL AS "hasImage" FROM sources WHERE owner=$1 AND id=$2`,
+      `SELECT s.id, s.original_text AS "originalText", s.url, s.created_at AS "createdAt", s.attachment_id AS "attachmentId", s.attachment_id IS NOT NULL AS "hasFile", COALESCE(a.mime IN ('image/png','image/jpeg','image/webp'),false) AS "hasImage", a.filename,a.mime FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner WHERE s.owner=$1 AND s.id=$2`,
       [owner, rows[0].sourceId],
     );
     return { item: rows[0], source: result.rows[0] };
   }
   async image(owner: string, sourceId: string) {
-    const { rows } = await this.db.query<{ bytes: Uint8Array; mime: string }>(
-      `SELECT a.bytes,a.mime FROM attachments a JOIN sources s ON s.attachment_id=a.id AND s.owner=a.owner WHERE s.owner=$1 AND s.id=$2`,
+    const file = await this.file(owner, sourceId);
+    if (!isImageMime(file.mime))
+      throw new AppError(404, "NOT_FOUND", "Image unavailable.");
+    return file;
+  }
+  async file(owner: string, sourceId: string) {
+    const { rows } = await this.db.query<{
+      bytes: Uint8Array;
+      mime: string;
+      filename: string;
+    }>(
+      `SELECT a.bytes,a.mime,a.filename FROM attachments a JOIN sources s ON s.attachment_id=a.id AND s.owner=a.owner WHERE s.owner=$1 AND s.id=$2`,
       [owner, idSchema.parse(sourceId)],
     );
-    if (!rows[0]) throw new AppError(404, "NOT_FOUND", "Image unavailable.");
-    return { bytes: Buffer.from(rows[0].bytes), mime: rows[0].mime };
+    if (!rows[0]) throw new AppError(404, "NOT_FOUND", "File unavailable.");
+    return {
+      bytes: Buffer.from(rows[0].bytes),
+      mime: rows[0].mime,
+      filename: rows[0].filename,
+    };
   }
   async search(owner: string, input: unknown): Promise<SearchResult> {
     const q = searchSchema.parse(input);
@@ -370,13 +382,18 @@ export class Library {
         const source = data.source!;
         let imageDigest = "";
         if (source.attachmentId) {
-          const image = await tx.query<{ digest: string }>(
-            "SELECT digest FROM attachments WHERE owner=$1 AND id=$2",
+          const image = await tx.query<{
+            digest: string;
+            original_text: string;
+          }>(
+            "SELECT digest,original_text FROM attachments WHERE owner=$1 AND id=$2",
             [owner, source.attachmentId],
           );
           if (!image.rows[0])
             throw new AppError(404, "NOT_FOUND", "Attachment unavailable.");
           imageDigest = image.rows[0].digest;
+          if (!source.originalText)
+            source.originalText = image.rows[0].original_text;
         }
         let url = source.url;
         if (url) {
@@ -515,7 +532,7 @@ export class Library {
       const sources = await tx.query<
         Source & { mime: string | null; bytes: Uint8Array | null }
       >(
-        `SELECT s.id,s.original_text AS "originalText",s.url,s.created_at AS "createdAt",a.mime,a.bytes FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner WHERE s.owner=$1`,
+        `SELECT s.id,s.original_text AS "originalText",s.url,s.created_at AS "createdAt",a.filename,a.mime,a.bytes FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner WHERE s.owner=$1`,
         [owner],
       );
       return {
@@ -524,7 +541,14 @@ export class Library {
         items: items.rows,
         sources: sources.rows.map(({ bytes, ...s }) => ({
           ...s,
-          imageBase64: bytes ? Buffer.from(bytes).toString("base64") : null,
+          imageBase64:
+            bytes && isImageMime(s.mime ?? "")
+              ? Buffer.from(bytes).toString("base64")
+              : null,
+          fileBase64:
+            bytes && !isImageMime(s.mime ?? "")
+              ? Buffer.from(bytes).toString("base64")
+              : null,
         })),
       };
     });

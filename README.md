@@ -21,14 +21,14 @@ Configuration is read from `private/.env` when present; a root `.env` is not loa
 
 - Local owner setup, password login, expiring browser sessions, logout.
 - OAuth authorization-code flow with PKCE, exact redirect allowlists, rotating refresh tokens, scope checks and revocation using the official MCP SDK.
-- Text/link capture and private PNG/JPEG/WebP uploads (10 MB and 25 megapixel limits; 250 MB per-owner attachment quota).
+- Text/link capture and private PNG/JPEG/WebP, PDF, TXT, Markdown, CSV and JSON uploads (10 MB per file; 250 MB per-owner attachment quota). Images are limited to 25 megapixels, PDFs to 30 unencrypted pages, and UTF-8 text files to 50,000 characters. Unsupported formats, invalid content and filename traversal are rejected.
 - Original sources stored independently of editable items; multiple items may reference one source.
 - Keyword search across titles, summaries, source text, URLs, tags and notes; category/status/tag/date filters; pagination.
-- Screenshot-first capture automatically drafts a title, summary, category, tags and transcription after upload. Review before saving, or choose Enter manually to open the full text/link form and edit any draft.
+- File-first capture automatically drafts a title, summary, category, tags and transcription after upload. Review before saving, or choose Enter manually to open the full text/link form and edit any draft. Website screenshots can propose a clearly visible source URL; it remains editable before saving and is never fetched automatically.
 - Unified search combines literal keyword matches with meaning-based matches using owner-scoped embeddings and the same category/status/date filters. No search-mode toggle is needed.
 - Flexible owner-scoped category names with existing-category suggestions, case-insensitive reuse and filtering. Existing labels are preserved; new uncategorized saves use `Uncategorized`.
 - Source/URL duplicate warnings, explicit duplicate override, idempotent saves and optimistic edit/delete revisions.
-- Source image viewing, notes, status changes, item deletion and JSON export including original image bytes.
+- Source image viewing, authenticated original-file downloads, notes, status changes, item deletion and JSON export including original file bytes (`imageBase64` for images, `fileBase64` for other files).
 - MCP tools and an inline React widget using the MCP Apps bridge. Tools remain useful without the widget.
 - Expired credential and abandoned-upload cleanup.
 
@@ -36,15 +36,15 @@ The standalone UI supports AI-assisted drafting and manual entry. Inside ChatGPT
 
 ### AI configuration and privacy
 
-Set `OPENAI_API_KEY` in the ignored `private/.env` and restart the server to enable AI. The key stays server-side. Drafts use the Responses API with `store: false`, strict structured output and `gpt-5.6-luna` by default (`OPENAI_MODEL` can override the draft model). A draft processes up to the first 16,000 source-text characters, the URL without query/fragment, up to 100 existing category names, and an owned screenshot resized to fit 1536 x 1536. No tools or URL fetches are available to the model. Treat generated summaries and screenshot transcriptions as suggestions to review; the original screenshot is preserved separately. Drafting never saves an item, and typed source text is not overwritten by a draft.
+Set `OPENAI_API_KEY` in the ignored `private/.env` and restart the server to enable AI. The key stays server-side. Drafts use the Responses API with `store: false`, strict structured output and `gpt-5.6-luna` by default (`OPENAI_MODEL` can override the draft model). A draft processes up to the first 16,000 source-text characters, the URL without query/fragment, up to 100 existing category names, and an owned image resized to fit 1536 x 1536 or the complete validated PDF via [Responses file inputs](https://developers.openai.com/api/docs/guides/file-inputs). PDF page images and text can increase API usage. No tools or URL fetches are available to the model. Treat generated summaries, transcriptions (up to a 12,000-character excerpt), and detected source URLs as suggestions to review. The original file is preserved separately. A website logo or title alone is not sufficient to infer its source URL. Supplied manual URLs take precedence. Drafting never saves an item, and typed source text is not overwritten by a draft.
+
+Text files are decoded as UTF-8, never rendered as HTML or executed; JSON is parsed for validity. Original files download as attachments with `nosniff` and a sandbox CSP. PDF.js validates PDFs in a worker with a 10-second time limit, a bounded JavaScript heap and at most two concurrent checks per process. This validation is not malware scanning; treat downloaded originals as untrusted. ChatGPT-hosted file download behavior still needs live verification after deployment.
 
 AI search sends the submitted query and bounded text from each matching drop (title, summary, category, tags, up to 1,000 note characters and 4,000 source-text characters, with a 6,000-character combined limit) to OpenAI's `text-embedding-3-small` model at 512 dimensions. Raw screenshots are not sent for search; their reviewed transcription can be indexed. Embeddings are cached in the local database, isolated by owner, invalidated on content edits and removed on deletion. This retrieves actual saved records, not a generated answer. Semantic matches use cosine similarity with a minimum score of 0.2, a heuristic rather than a calibrated confidence score. Literal matches across full source text, metadata and URLs are always included, rank first, and are deduplicated before pagination.
 
 Search is explicitly submitted rather than calling AI on every keystroke. The initial index may take longer; unchanged items reuse cached vectors. At most 1,000 filtered drops are considered for AI ranking. Hybrid search falls back to keyword results with a visible notice when AI is unavailable, fails, or the filtered library exceeds that limit. Indexing is batched and can resume from cached batches after a timeout. AI operations are limited to one concurrent request and 20 starts per minute per owner, per server process. Failed drafts are never saved automatically. `store: false` does not itself mean zero provider retention; the project's OpenAI data policies still apply. API calls incur usage charges. Manual entry and keyword retrieval do not require an API key. The API retains explicit `keyword` mode for clients that must avoid external AI calls; its default is `hybrid`.
 
-### Categorization API status
-
-The [September 29 Decisions API announcement](https://openai.com/index/devday-2026-recap/) describes a limited preview with broad release planned in the coming days. It accepts text/images and returns finite predefined answers. That is a potential fit for selecting among the authenticated owner's existing categories, but not generating new names directly. A future integration should include an explicit no-match result and a separate new-category proposal step. Endpoint schemas and project access must be verified against published API documentation before implementation; no speculative Decisions endpoint is called today. AI drafts currently use the documented Responses API.
+The current AI setup uses Responses for drafting and embeddings for search; no Decisions API integration is needed.
 
 ## Storage
 
@@ -63,7 +63,7 @@ The local app is usable now. An actual ChatGPT connection additionally requires 
 5. Restart, complete account linking, sign in with your owner password, and approve the requested read/write scopes.
 6. Ask ChatGPT to save an item, then retrieve it from a new conversation. For a screenshot, preserve it with `upload_source`, then pass its returned `attachmentId` to `save_item`. The model supplies the transcription/summary separately.
 
-Only `files.oaiusercontent.com` HTTPS file-download URLs are accepted by screenshot import. Redirects and arbitrary external fetches are blocked. If a host supplies another legitimate file service, verify it and update the allowlist deliberately. Temporary download URLs are never saved or logged. If file transfer is unsupported in a host, the standalone UI can upload the original screenshot directly.
+Only `files.oaiusercontent.com` HTTPS file-download URLs are accepted by file import. Redirects and arbitrary external fetches are blocked. If a host supplies another legitimate file service, verify it and update the allowlist deliberately. Temporary download URLs are never saved or logged. If file transfer is unsupported in a host, the standalone UI can upload the original file directly.
 
 The standalone Export button downloads a complete JSON library; export is not exposed as a model tool. The connection icon revokes all MCP tokens without deleting saved items.
 
@@ -71,18 +71,20 @@ Live ChatGPT account linking and its file-transfer path must be verified in the 
 
 ## MCP tools
 
-| Tool            | Purpose                                                                                                               |
-| --------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `search_items`  | Search/filter the authenticated owner's library                                                                       |
-| `draft_item`    | Propose editable metadata and screenshot transcription through OpenAI; requires write scope but does not save an item |
-| `get_item`      | Read an item and immutable source; image preview is widget-only metadata                                              |
-| `save_item`     | Save a source or add an item referencing an existing source; requires a retry-stable UUID                             |
-| `update_item`   | Edit title, summary, tags, notes, category or status using current revision                                           |
-| `delete_item`   | Delete an item using current revision, clean up unshared sources/images                                               |
-| `upload_source` | Preserve an explicitly supplied ChatGPT image file                                                                    |
-| `get_profile`   | Return the stable authenticated owner ID                                                                              |
+| Tool            | Purpose                                                                                                                       |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `search_items`  | Search/filter the authenticated owner's library                                                                               |
+| `draft_item`    | Propose editable metadata, file transcription and a visible source URL through OpenAI; requires write scope but does not save |
+| `get_item`      | Read an item and immutable source; original file bytes are widget-only metadata                                               |
+| `save_item`     | Save a source or add an item referencing an existing source; requires a retry-stable UUID                                     |
+| `update_item`   | Edit title, summary, tags, notes, category or status using current revision                                                   |
+| `delete_item`   | Delete an item using current revision, clean up unshared sources/files                                                        |
+| `upload_source` | Preserve an explicitly supplied supported ChatGPT file                                                                        |
+| `get_profile`   | Return the stable authenticated owner ID                                                                                      |
 
 ## Development and checks
+
+The `tests/` directory and its fixtures are kept locally and excluded from version control. Fresh clones do not include them, so `npm test`, `npm run check`, and the additional checks below require a local copy of that directory. Lint and build can be run independently with `npm run lint` and `npm run build`.
 
 ```sh
 npm run check
@@ -93,10 +95,16 @@ Checks include ESLint, TypeScript, the production widget build, real HTTP API te
 
 Use the in-app browser for visual verification. Check desktop and mobile layouts, setup/login, screenshot upload, source display, editing, search, export, deletion and keyboard focus.
 
+Additional pre-commit checks:
+
+- `tests/uploads.test.ts` includes encrypted PDFs (including an empty viewing password), image-only scans, simulated parser timeout recovery, concurrent validation limits and exact page/text boundaries. Synthetic PDF fixtures are kept locally; regenerating them with `tests/generate-pdf-fixtures.py` requires Pillow, ReportLab and pypdf with AES support, not production runtime dependencies.
+- `DROP_IT_LIVE_AI=1 npx tsx tests/live-ai-checks.ts` runs paid, opt-in checks with the configured project key against synthetic screenshots and a scanned PDF. It checks missing, brand-only, truncated and ambiguous URLs, address-bar precedence and scan transcription. A passing sample is not a guarantee against model errors; source URLs still need review.
+- `DROP_IT_BROWSER_TEST=1 node --import tsx tests/browser-recovery.ts` starts a separate loopback-only, automatically authenticated test instance with a temporary database and mocked AI. It never loads your environment or library. Its first draft fails with a rate limit, second with a simulated timeout, third succeeds, and fourth times out for manual-save verification. `GET /__test/state` shows only test counts. Stop it gracefully with Ctrl-C to remove the temporary data. Never deploy this test harness.
+
 ## Deliberate limits
 
 - Private, single-owner onboarding; no public launch, billing, shared collections or team invitations.
-- No browser extension, Apple Notes import, reminders, automatic webpage scraping or vector search.
+- No browser extension, Apple Notes import, reminders or automatic webpage scraping.
 - No automated password recovery yet. Keep your password in your password manager.
 - Backups may retain deleted content until you rotate them; export files contain your original private content.
 - Local OAuth implementation is intended for private use. A broader release needs hosted identity/provider review, deployment hardening and an account-recovery workflow.
