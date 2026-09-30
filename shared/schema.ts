@@ -16,6 +16,14 @@ export const categorySchema = z
       .regex(/[\p{L}\p{N}]/u),
   );
 export const views = ["All drops", "Saved", "Trash"] as const;
+export const settingsSchema = z
+  .object({
+    aiConfigured: z.boolean(),
+    connectedApps: z.number().int().nonnegative(),
+    trashRetentionDays: z.literal(7),
+  })
+  .strict();
+export type LibrarySettings = z.infer<typeof settingsSchema>;
 export const idSchema = z.string().uuid();
 export const urlSchema = z
   .string()

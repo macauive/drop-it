@@ -34,6 +34,7 @@ Configuration is read from `private/.env` when present; a root `.env` is not loa
 - Migration leaves existing drops unbookmarked and gives formerly archived drops a fresh seven-day Trash window. In progress and Done are removed.
 - MCP tools and an inline React widget using the MCP Apps bridge. Tools remain useful without the widget.
 - Expired credential and abandoned-upload cleanup.
+- Standalone Settings panel with JSON export, owner-scoped connected-app count and confirmed disconnect-all, AI configuration/privacy details and the fixed seven-day Trash policy. Configuration status does not verify OpenAI credentials or credit; API keys are never sent to the browser. Embedded ChatGPT widgets do not expose browser-session settings or library export.
 
 The standalone UI supports AI-assisted drafting and manual entry. Inside ChatGPT, the host model can supply metadata directly or request `draft_item`. Saving or drafting a URL does not fetch its page. Source content is untrusted data, never instructions.
 

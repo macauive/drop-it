@@ -867,6 +867,67 @@ p {
   margin-top: 10px;
   font-size: 11px;
 }
+.settings-section {
+  padding: 24px 0;
+  border-bottom: 1px solid var(--line);
+}
+.settings-section:first-child {
+  padding-top: 0;
+}
+.settings-section:last-child {
+  border-bottom: 0;
+}
+.settings-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  margin-bottom: 14px;
+}
+.settings-section h3 svg {
+  flex: none;
+  color: #718397;
+}
+.settings-section p {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #66737f;
+  margin: 10px 0 16px;
+  overflow-wrap: anywhere;
+}
+.settings-facts {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+.settings-facts > div {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.settings-facts dt {
+  color: #66737f;
+}
+.settings-facts dd {
+  margin: 0;
+  font-weight: 600;
+}
+.settings-notice {
+  font-size: 12px;
+  color: #245f93;
+  line-height: 1.6;
+}
+.settings-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0;
+  font-size: 12px;
+  color: #66737f;
+}
+.settings-confirm .actions {
+  flex-wrap: wrap;
+}
 .source-link {
   display: flex;
   align-items: center;

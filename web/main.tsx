@@ -1,4 +1,11 @@
-import React, { useState, useEffect, useCallback, useRef, useId } from "react";
+import React, {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+  useId,
+} from "react";
 import { createRoot } from "react-dom/client";
 import {
   ArrowDownToLine,
@@ -23,6 +30,7 @@ import {
   FolderOpen,
   Pencil,
   PlugZap,
+  Settings,
 } from "lucide-react";
 import {
   views,
@@ -30,6 +38,8 @@ import {
   type Source,
   type SaveInput,
   type SearchResult,
+  settingsSchema,
+  type LibrarySettings,
 } from "../shared/schema.js";
 import { api, client, ClientError, embedded } from "./client.js";
 import {
@@ -363,7 +373,7 @@ function Library({ onLogout }: { onLogout: () => void }) {
     [adding, setAdding] = useState(false),
     [offset, setOffset] = useState(0),
     [tick, setTick] = useState(0),
-    [notice, setNotice] = useState("");
+    [settingsOpen, setSettingsOpen] = useState(false);
   const refresh = useCallback(() => setTick((v) => v + 1), []);
   useEffect(() => {
     let active = true;
@@ -487,37 +497,14 @@ function Library({ onLogout }: { onLogout: () => void }) {
           </span>
           <div className="top-actions">
             {!embedded && (
-              <>
-                <button
-                  className="icon-button"
-                  title="Disconnect all MCP clients"
-                  aria-label="Disconnect all MCP clients"
-                  onClick={async () => {
-                    if (
-                      !confirm(
-                        "Disconnect ChatGPT and other MCP clients? Your library will remain saved.",
-                      )
-                    )
-                      return;
-                    try {
-                      await api("/api/revoke-connections", "POST", {});
-                      setNotice("Connections revoked.");
-                    } catch (e) {
-                      setError(message(e));
-                    }
-                  }}
-                >
-                  <PlugZap size={17} />
-                </button>
-                <a
-                  className="icon-button"
-                  href="/api/export"
-                  title="Export library"
-                  aria-label="Export library"
-                >
-                  <ArrowDownToLine size={17} />
-                </a>
-              </>
+              <button
+                className="icon-button"
+                title="Settings"
+                aria-label="Settings"
+                onClick={() => setSettingsOpen(true)}
+              >
+                <Settings size={18} />
+              </button>
             )}
             <button
               className="primary"
@@ -633,18 +620,6 @@ function Library({ onLogout }: { onLogout: () => void }) {
           </form>
           <Alert text={error} />
           {error && <button onClick={refresh}>Retry</button>}
-          {notice && (
-            <div className="notice" role="status">
-              {notice}
-              <button
-                className="icon-button"
-                aria-label="Dismiss notification"
-                onClick={() => setNotice("")}
-              >
-                <X size={14} />
-              </button>
-            </div>
-          )}
           {loading ? (
             <div className="loading">
               <Busy />
@@ -807,6 +782,9 @@ function Library({ onLogout }: { onLogout: () => void }) {
           onChange={refresh}
         />
       )}
+      {settingsOpen && !embedded && (
+        <SettingsPanel onClose={() => setSettingsOpen(false)} />
+      )}
     </div>
   );
 }
@@ -821,10 +799,15 @@ function Panel({
   children: React.ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const dialog = ref.current;
+    const trigger = document.activeElement;
     dialog?.showModal();
-    return () => dialog?.close();
+    return () => {
+      dialog?.close();
+      if (trigger instanceof HTMLElement && trigger.isConnected)
+        trigger.focus();
+    };
   }, []);
   return (
     <dialog
@@ -862,6 +845,236 @@ function Panel({
     </dialog>
   );
 }
+function SettingsPanel({ onClose }: { onClose: () => void }) {
+  const [settings, setSettings] = useState<LibrarySettings | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState<"export" | "disconnect" | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const actionLock = useRef(false);
+  const cancelDisconnect = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirmDisconnect) cancelDisconnect.current?.focus();
+  }, [confirmDisconnect]);
+  useEffect(() => {
+    let active = true;
+    api<unknown>("/api/settings")
+      .then((result) => {
+        const parsed = settingsSchema.parse(result);
+        if (active) {
+          setSettings(parsed);
+          setLoadError("");
+        }
+      })
+      .catch(() => {
+        if (active) setLoadError("Settings could not be loaded.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [attempt]);
+  const exportLibrary = async () => {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    setBusy("export");
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/export", {
+        credentials: "same-origin",
+      });
+      if (
+        !response.ok ||
+        !response.headers.get("content-type")?.startsWith("application/json")
+      )
+        throw new Error("Export failed. Check your connection and try again.");
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "drop-it-library.json";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      setNotice("Library download started.");
+    } catch {
+      setError("Export failed. Check your connection and try again.");
+    } finally {
+      actionLock.current = false;
+      setBusy(null);
+    }
+  };
+  const disconnect = async () => {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    setBusy("disconnect");
+    setError("");
+    setNotice("");
+    try {
+      await api("/api/revoke-connections", "POST", {});
+      setSettings((value) => (value ? { ...value, connectedApps: 0 } : value));
+      setConfirmDisconnect(false);
+      setNotice("App connections disconnected. Your library is unchanged.");
+    } catch {
+      setError("Could not disconnect apps. Please try again.");
+    } finally {
+      actionLock.current = false;
+      setBusy(null);
+    }
+  };
+  return (
+    <Panel
+      title="Settings"
+      onClose={() => {
+        if (!actionLock.current) onClose();
+      }}
+    >
+      <div className="panel-body settings-body">
+        <Alert text={error} />
+        {notice && (
+          <p className="settings-notice" role="status">
+            {notice}
+          </p>
+        )}
+        <section className="settings-section" aria-labelledby="settings-data">
+          <h3 id="settings-data">
+            <ArrowDownToLine size={17} />
+            Data
+          </h3>
+          <p>
+            A private JSON copy of your drops, notes, bookmarks and original
+            files, including unexpired Trash.
+          </p>
+          <button disabled={busy !== null} onClick={() => void exportLibrary()}>
+            {busy === "export" ? <Busy /> : <ArrowDownToLine size={16} />}
+            {busy === "export" ? "Exporting..." : "Export library"}
+          </button>
+        </section>
+        <Alert text={loadError} />
+        {loadError && (
+          <button
+            onClick={() => {
+              setLoadError("");
+              setAttempt((value) => value + 1);
+            }}
+          >
+            <RotateCcw size={16} />
+            Retry settings
+          </button>
+        )}
+        {!settings && !loadError && (
+          <div className="settings-loading" role="status">
+            <Busy />
+            Loading settings
+          </div>
+        )}
+        <section
+          className="settings-section"
+          aria-labelledby="settings-connections"
+        >
+          <h3 id="settings-connections">
+            <PlugZap size={17} />
+            Connections
+          </h3>
+          <p>
+            {settings
+              ? settings.connectedApps === 0
+                ? "No connected apps."
+                : `${settings.connectedApps} connected ${settings.connectedApps === 1 ? "app" : "apps"}.`
+              : "Connection status unavailable."}
+          </p>
+          <p>
+            Disconnecting revokes existing ChatGPT and other app access. Your
+            drops and this browser session stay intact.
+          </p>
+          {confirmDisconnect ? (
+            <div className="settings-confirm">
+              <p>Disconnect all apps? They will need approval to reconnect.</p>
+              <div className="actions">
+                <button
+                  ref={cancelDisconnect}
+                  disabled={busy !== null}
+                  onClick={() => setConfirmDisconnect(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="danger"
+                  disabled={busy !== null}
+                  onClick={() => void disconnect()}
+                >
+                  {busy === "disconnect" ? <Busy /> : <PlugZap size={16} />}
+                  {busy === "disconnect"
+                    ? "Disconnecting..."
+                    : "Disconnect all"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              disabled={busy !== null || !settings?.connectedApps}
+              onClick={() => setConfirmDisconnect(true)}
+            >
+              <PlugZap size={16} />
+              Disconnect all apps
+            </button>
+          )}
+        </section>
+        <section className="settings-section" aria-labelledby="settings-ai">
+          <h3 id="settings-ai">
+            <Sparkles size={17} />
+            AI &amp; privacy
+          </h3>
+          <dl className="settings-facts">
+            <div>
+              <dt>OpenAI</dt>
+              <dd>
+                {settings
+                  ? settings.aiConfigured
+                    ? "Configured"
+                    : "Not configured"
+                  : "Unknown"}
+              </dd>
+            </div>
+          </dl>
+          <p>
+            Drafting sends the selected source text, link and image or PDF
+            content to OpenAI. Search sends your query and portions of matching
+            drops, including notes and transcription.
+          </p>
+          <p>
+            API keys stay on the server. Configuration does not confirm API
+            access or available credit. OpenAI usage charges and your project’s
+            data policies apply.
+          </p>
+        </section>
+        <section className="settings-section" aria-labelledby="settings-trash">
+          <h3 id="settings-trash">
+            <Trash2 size={17} />
+            Trash
+          </h3>
+          <dl className="settings-facts">
+            <div>
+              <dt>Retention</dt>
+              <dd>7 days · Fixed</dd>
+            </div>
+          </dl>
+          <p>
+            Wiped drops can be restored for seven days. After their deadline,
+            drops and any unshared source files are permanently deleted.
+          </p>
+          <p>
+            Cleanup runs hourly while the server is running and at startup.
+            Restoring a drop cancels its deletion and preserves its bookmark.
+          </p>
+        </section>
+      </div>
+    </Panel>
+  );
+}
+
 function Capture({
   onClose,
   onSaved,

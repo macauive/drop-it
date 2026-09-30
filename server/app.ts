@@ -16,7 +16,7 @@ import { Auth } from "./auth.js";
 import { Library } from "./library.js";
 import { createMcpServer } from "./mcp.js";
 import { AppError } from "./errors.js";
-import { searchSchema, idSchema } from "../shared/schema.js";
+import { searchSchema, idSchema, settingsSchema } from "../shared/schema.js";
 import { OpenAIProvider, type AIProvider } from "./ai.js";
 
 export function createApp(
@@ -164,6 +164,19 @@ export function createApp(
   app.post("/api/revoke-connections", async (_req, res) => {
     await auth.revokeAll(res.locals.owner);
     res.json({ ok: true });
+  });
+  app.get("/api/settings", async (_req, res) => {
+    const { rows } = await db.query<{ count: string }>(
+      "SELECT count(DISTINCT client_id) FROM oauth_tokens WHERE owner=$1 AND expires_at>now()",
+      [res.locals.owner],
+    );
+    res.json(
+      settingsSchema.parse({
+        aiConfigured: library.aiAvailable,
+        connectedApps: Number(rows[0].count),
+        trashRetentionDays: 7,
+      }),
+    );
   });
   app.get("/api/authorize/:id", async (req, res) =>
     res.json(
