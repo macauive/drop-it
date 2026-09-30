@@ -22,7 +22,8 @@ import { isImageMime } from "../shared/files.js";
 
 export const digest = (value: string | Buffer) =>
   createHash("sha256").update(value).digest("hex");
-const selection = `SELECT i.id, i.source_id AS "sourceId", i.title, i.summary, i.category, i.status,
+const selection = `SELECT i.id, i.source_id AS "sourceId", i.title, i.summary, i.category,
+  i.is_saved AS "isSaved", i.trashed_at AS "trashedAt", i.trashed_at + interval '7 days' AS "deleteAfter",
   i.tags, i.notes, i.revision, i.created_at AS "createdAt", i.updated_at AS "updatedAt",
   s.url AS "sourceUrl", EXISTS(SELECT 1 FROM attachments a WHERE a.id=s.attachment_id AND a.owner=s.owner AND a.mime IN ('image/png','image/jpeg','image/webp')) AS "hasImage"
   FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner`;
@@ -175,7 +176,7 @@ export class Library {
   async get(owner: string, id: string, tx: Queryable = this.db) {
     idSchema.parse(id);
     const { rows } = await tx.query<Item>(
-      `${selection} WHERE i.owner=$1 AND i.id=$2`,
+      `${selection} WHERE i.owner=$1 AND i.id=$2 AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days')`,
       [owner, id],
     );
     if (!rows[0])
@@ -198,7 +199,8 @@ export class Library {
       mime: string;
       filename: string;
     }>(
-      `SELECT a.bytes,a.mime,a.filename FROM attachments a JOIN sources s ON s.attachment_id=a.id AND s.owner=a.owner WHERE s.owner=$1 AND s.id=$2`,
+      `SELECT a.bytes,a.mime,a.filename FROM attachments a JOIN sources s ON s.attachment_id=a.id AND s.owner=a.owner WHERE s.owner=$1 AND s.id=$2
+      AND EXISTS(SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days'))`,
       [owner, idSchema.parse(sourceId)],
     );
     if (!rows[0]) throw new AppError(404, "NOT_FOUND", "File unavailable.");
@@ -235,7 +237,12 @@ export class Library {
       }
     }
     if (q.category) add("lower(i.category)=lower(?)", q.category);
-    if (q.status) add("i.status=?", q.status);
+    where.push(
+      q.view === "Trash"
+        ? "i.trashed_at IS NOT NULL AND i.trashed_at > now()-interval '7 days'"
+        : "i.trashed_at IS NULL",
+    );
+    if (q.view === "Saved") where.push("i.is_saved=true");
     if (q.tag) add("?=ANY(i.tags)", q.tag.toLowerCase());
     if (q.before) add("i.created_at<?", q.before);
     if (q.after) add("i.created_at>?", q.after);
@@ -258,7 +265,7 @@ export class Library {
         throw new AppError(
           400,
           "AI_SEARCH_SIZE",
-          "AI search currently supports up to 1,000 drops at once. Narrow the pool or status.",
+          "AI search currently supports up to 1,000 drops at once. Narrow the pool or view.",
         );
       const docs = await this.db.query<
         SearchDocument & { keywordMatch: boolean }
@@ -311,12 +318,18 @@ export class Library {
       resultTotal = results.length;
       items = results.slice(q.offset, q.offset + q.limit);
     }
-    const stats = await this.db.query<{ status: string; count: string }>(
-      "SELECT status,count(*) FROM items WHERE owner=$1 GROUP BY status",
+    const stats = await this.db.query<{
+      all: string;
+      saved: string;
+      trash: string;
+    }>(
+      `SELECT count(*) FILTER (WHERE trashed_at IS NULL) AS all,
+      count(*) FILTER (WHERE trashed_at IS NULL AND is_saved) AS saved,
+      count(*) FILTER (WHERE trashed_at > now()-interval '7 days') AS trash FROM items WHERE owner=$1`,
       [owner],
     );
     const categoryRows = await this.db.query<{ category: string }>(
-      "SELECT DISTINCT category FROM items WHERE owner=$1 ORDER BY category",
+      "SELECT DISTINCT category FROM items WHERE owner=$1 AND (trashed_at IS NULL OR trashed_at > now()-interval '7 days') ORDER BY category",
       [owner],
     );
     return {
@@ -327,9 +340,11 @@ export class Library {
         categorySchema.parse(row.category),
       ),
       total: resultTotal,
-      counts: Object.fromEntries(
-        stats.rows.map((row) => [row.status, Number(row.count)]),
-      ),
+      counts: {
+        "All drops": Number(stats.rows[0].all),
+        Saved: Number(stats.rows[0].saved),
+        Trash: Number(stats.rows[0].trash),
+      },
     };
   }
   async save(owner: string, input: unknown) {
@@ -368,12 +383,18 @@ export class Library {
             throw error;
           },
         );
+        if (result.item.trashedAt)
+          throw new AppError(
+            409,
+            "IN_TRASH",
+            "This drop is in Trash. Restore it to use it again.",
+          );
         return { ...result, replayed: true };
       }
       let sourceId = data.sourceId;
       if (sourceId) {
         const source = await tx.query(
-          "SELECT id FROM sources WHERE owner=$1 AND id=$2",
+          "SELECT s.id FROM sources s WHERE s.owner=$1 AND s.id=$2 AND EXISTS(SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days'))",
           [owner, sourceId],
         );
         if (!source.rows.length)
@@ -412,7 +433,7 @@ export class Library {
           ]),
         );
         const duplicates = await tx.query<{ id: string; title: string }>(
-          `SELECT i.id,i.title FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE i.owner=$1 AND (s.fingerprint=$2 OR ($3<>'' AND s.url=$3)) LIMIT 5`,
+          `SELECT i.id,i.title FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE i.owner=$1 AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days') AND (s.fingerprint=$2 OR ($3<>'' AND s.url=$3)) LIMIT 5`,
           [owner, sourceFingerprint, url],
         );
         if (!data.allowDuplicate && duplicates.rows.length)
@@ -461,16 +482,22 @@ export class Library {
     return this.db.transaction(async (tx) => {
       await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [owner]);
       const { item } = await this.get(owner, data.id, tx);
+      if (item.trashedAt)
+        throw new AppError(
+          409,
+          "IN_TRASH",
+          "Restore this drop before editing it.",
+        );
       const merged = { ...item, ...data };
       const { rows } = await tx.query(
-        "UPDATE items SET title=$1,summary=$2,category=$3,tags=$4,notes=$5,status=$6,revision=revision+1,updated_at=now() WHERE owner=$7 AND id=$8 AND revision=$9 RETURNING id",
+        "UPDATE items SET title=$1,summary=$2,category=$3,tags=$4,notes=$5,is_saved=$6,revision=revision+1,updated_at=now() WHERE owner=$7 AND id=$8 AND revision=$9 RETURNING id",
         [
           merged.title,
           merged.summary,
           await this.canonicalCategory(owner, merged.category, tx),
           merged.tags,
           merged.notes,
-          merged.status,
+          merged.isSaved,
           owner,
           data.id,
           data.revision,
@@ -498,9 +525,16 @@ export class Library {
     const data = deleteSchema.parse(input);
     return this.db.transaction(async (tx) => {
       await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [owner]);
-      const { source } = await this.get(owner, data.id, tx);
+      const { item } = await this.get(owner, data.id, tx);
+      if (item.revision !== data.revision)
+        throw new AppError(
+          409,
+          "CONFLICT",
+          "This drop changed elsewhere. Reopen it before wiping.",
+        );
+      if (item.trashedAt) return { trashed: true };
       const result = await tx.query(
-        "DELETE FROM items WHERE owner=$1 AND id=$2 AND revision=$3 RETURNING id",
+        "UPDATE items SET trashed_at=now(),revision=revision+1,updated_at=now() WHERE owner=$1 AND id=$2 AND revision=$3 RETURNING id",
         [owner, data.id, data.revision],
       );
       if (!result.rows.length)
@@ -510,15 +544,29 @@ export class Library {
           "This item changed elsewhere. Reopen it before deleting.",
         );
       await tx.query(
-        "DELETE FROM sources WHERE owner=$1 AND id=$2 AND NOT EXISTS(SELECT 1 FROM items WHERE owner=$1 AND source_id=$2)",
-        [owner, source.id],
+        "DELETE FROM item_embeddings WHERE owner=$1 AND item_id=$2",
+        [owner, data.id],
       );
-      if (source.attachmentId)
-        await tx.query(
-          "DELETE FROM attachments WHERE owner=$1 AND id=$2 AND NOT EXISTS(SELECT 1 FROM sources WHERE owner=$1 AND attachment_id=$2)",
-          [owner, source.attachmentId],
+      return { trashed: true };
+    });
+  }
+  async restore(owner: string, input: unknown) {
+    const data = deleteSchema.parse(input);
+    return this.db.transaction(async (tx) => {
+      await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [owner]);
+      const { item } = await this.get(owner, data.id, tx);
+      if (item.revision !== data.revision)
+        throw new AppError(
+          409,
+          "CONFLICT",
+          "This drop changed elsewhere. Reopen it before restoring.",
         );
-      return { deleted: true };
+      if (item.trashedAt)
+        await tx.query(
+          "UPDATE items SET trashed_at=NULL,revision=revision+1,updated_at=now() WHERE owner=$1 AND id=$2",
+          [owner, data.id],
+        );
+      return this.get(owner, data.id, tx);
     });
   }
   async export(owner: string) {
@@ -526,17 +574,17 @@ export class Library {
       // Share the owner lock used by saves/deletes for a consistent export.
       await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [owner]);
       const items = await tx.query<Item>(
-        `${selection} WHERE i.owner=$1 ORDER BY i.created_at`,
+        `${selection} WHERE i.owner=$1 AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days') ORDER BY i.created_at`,
         [owner],
       );
       const sources = await tx.query<
         Source & { mime: string | null; bytes: Uint8Array | null }
       >(
-        `SELECT s.id,s.original_text AS "originalText",s.url,s.created_at AS "createdAt",a.filename,a.mime,a.bytes FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner WHERE s.owner=$1`,
+        `SELECT s.id,s.original_text AS "originalText",s.url,s.created_at AS "createdAt",a.filename,a.mime,a.bytes FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner WHERE s.owner=$1 AND EXISTS(SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days'))`,
         [owner],
       );
       return {
-        version: 1,
+        version: 2,
         exportedAt: new Date().toISOString(),
         items: items.rows,
         sources: sources.rows.map(({ bytes, ...s }) => ({

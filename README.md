@@ -23,12 +23,15 @@ Configuration is read from `private/.env` when present; a root `.env` is not loa
 - OAuth authorization-code flow with PKCE, exact redirect allowlists, rotating refresh tokens, scope checks and revocation using the official MCP SDK.
 - Text/link capture and private PNG/JPEG/WebP, PDF, TXT, Markdown, CSV and JSON uploads (10 MB per file; 250 MB per-owner attachment quota). Images are limited to 25 megapixels, PDFs to 30 unencrypted pages, and UTF-8 text files to 50,000 characters. Unsupported formats, invalid content and filename traversal are rejected.
 - Original sources stored independently of editable items; multiple items may reference one source.
-- Keyword search across titles, summaries, source text, URLs, tags and notes; category/status/tag/date filters; pagination.
+- All drops contains created drops outside Trash. Saved is a bookmark filter, not a lifecycle status; yellow ribbons toggle bookmarks. New drops are created unbookmarked.
+- Keyword search across titles, summaries, source text, URLs, tags and notes; pool/view/tag/date filters; pagination.
 - File-first capture automatically drafts a title, summary, category, tags and transcription after upload. Review before saving, or choose Enter manually to open the full text/link form and edit any draft. Website screenshots can propose a clearly visible source URL; it remains editable before saving and is never fetched automatically.
-- Unified search combines literal keyword matches with meaning-based matches using owner-scoped embeddings and the same category/status/date filters. No search-mode toggle is needed.
+- Unified search combines literal keyword matches with meaning-based matches using owner-scoped embeddings and the same pool/view/date filters. No search-mode toggle is needed.
 - Flexible owner-scoped category names with existing-category suggestions, case-insensitive reuse and filtering. Existing labels are preserved; new uncategorized saves use `Uncategorized`.
 - Source/URL duplicate warnings, explicit duplicate override, idempotent saves and optimistic edit/delete revisions.
-- Source image viewing, authenticated original-file downloads, notes, status changes, item deletion and JSON export including original file bytes (`imageBase64` for images, `fileBase64` for other files).
+- Source image viewing, authenticated original-file downloads, collapsible transcription, notes and JSON export v2 including bookmark/Trash state and original file bytes (`imageBase64` for images, `fileBase64` for other files).
+- Wipe drop moves a drop to Trash for seven days. Restore preserves its bookmark and cancels deletion; wiping it again starts a new window. Repeated wipes while already in Trash do not reset the deadline. Expired drops cannot be read, restored, downloaded or exported. Cleanup runs at startup and hourly while the server is running, permanently removing expired drops and only unreferenced sources/files. Offline cleanup resumes on next startup.
+- Migration leaves existing drops unbookmarked and gives formerly archived drops a fresh seven-day Trash window. In progress and Done are removed.
 - MCP tools and an inline React widget using the MCP Apps bridge. Tools remain useful without the widget.
 - Expired credential and abandoned-upload cleanup.
 
@@ -76,9 +79,10 @@ Live ChatGPT account linking and its file-transfer path must be verified in the 
 | `search_items`  | Search/filter the authenticated owner's library                                                                               |
 | `draft_item`    | Propose editable metadata, file transcription and a visible source URL through OpenAI; requires write scope but does not save |
 | `get_item`      | Read an item and immutable source; original file bytes are widget-only metadata                                               |
-| `save_item`     | Save a source or add an item referencing an existing source; requires a retry-stable UUID                                     |
-| `update_item`   | Edit title, summary, tags, notes, category or status using current revision                                                   |
-| `delete_item`   | Delete an item using current revision, clean up unshared sources/files                                                        |
+| `save_item`     | Create an unbookmarked drop; requires a retry-stable UUID (tool name retained for compatibility)                              |
+| `update_item`   | Edit title, summary, tags, notes, category or isSaved bookmark using current revision                                         |
+| `delete_item`   | Move a drop to Trash for seven days using current revision                                                                    |
+| `restore_item`  | Restore a drop before its Trash deadline, preserving its bookmark                                                             |
 | `upload_source` | Preserve an explicitly supplied supported ChatGPT file                                                                        |
 | `get_profile`   | Return the stable authenticated owner ID                                                                                      |
 

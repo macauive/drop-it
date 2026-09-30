@@ -268,6 +268,18 @@ export function createApp(
       }),
     );
   });
+  app.post("/api/items/:id/restore", async (req, res) => {
+    const body = z
+      .object({ revision: z.number().int().positive() })
+      .strict()
+      .parse(req.body);
+    res.json(
+      await library.restore(res.locals.owner, {
+        ...body,
+        id: idSchema.parse(req.params.id),
+      }),
+    );
+  });
   app.get("/api/export", async (_req, res) => {
     res
       .attachment("drop-it-library.json")

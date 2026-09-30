@@ -137,6 +137,10 @@ export const client = {
     embedded
       ? call("delete_item", { id, revision })
       : api(`/api/items/${id}`, "DELETE", { revision }),
+  restore: (id: string, revision: number): Promise<Detail> =>
+    embedded
+      ? call("restore_item", { id, revision })
+      : api(`/api/items/${id}/restore`, "POST", { revision }),
   upload: async (
     file: File,
   ): Promise<{ attachmentId: string; originalText: string }> => {

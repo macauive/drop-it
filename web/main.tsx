@@ -7,10 +7,8 @@ import {
   ArrowRight,
   ArrowUpRight,
   Bookmark,
-  Check,
   ChevronDown,
-  Circle,
-  Clock3,
+  RotateCcw,
   FileText,
   Image as ImageIcon,
   Inbox,
@@ -27,7 +25,7 @@ import {
   PlugZap,
 } from "lucide-react";
 import {
-  statuses,
+  views,
   type Item,
   type Source,
   type SaveInput,
@@ -84,11 +82,39 @@ const date = (value: string) =>
     day: "numeric",
   });
 const icons = {
+  "All drops": Inbox,
   Saved: Bookmark,
-  "In progress": Clock3,
-  Done: Check,
-  Dismissed: X,
+  Trash: Trash2,
 };
+function SaveRibbon({
+  saved,
+  disabled,
+  onClick,
+}: {
+  saved: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={`icon-button save-ribbon ${saved ? "is-saved" : ""}`}
+      aria-label={saved ? "Unsave drop" : "Save drop"}
+      title={saved ? "Unsave drop" : "Save for later"}
+      aria-pressed={saved}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <Bookmark size={20} fill={saved ? "currentColor" : "none"} />
+    </button>
+  );
+}
+const deletionDate = (value: string) =>
+  new Date(value).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 function Brand() {
   return (
     <div className="brand">
@@ -321,7 +347,7 @@ function Consent({ id }: { id: string }) {
 function Library({ onLogout }: { onLogout: () => void }) {
   const [searchDraft, setSearchDraft] = useState("");
   const [query, setQuery] = useState(""),
-    [status, setStatus] = useState(""),
+    [view, setView] = useState<(typeof views)[number]>("All drops"),
     [category, setCategory] = useState("");
   const [data, setData] = useState<SearchResult>({
       items: [],
@@ -349,7 +375,7 @@ function Library({ onLogout }: { onLogout: () => void }) {
           .search({
             query,
             mode: "hybrid",
-            status: (status as Item["status"]) || undefined,
+            view,
             category: (category as Item["category"]) || undefined,
             offset,
             limit: 30,
@@ -370,21 +396,43 @@ function Library({ onLogout }: { onLogout: () => void }) {
       active = false;
       clearTimeout(timer);
     };
-  }, [query, status, category, offset, tick]);
+  }, [query, view, category, offset, tick]);
   useEffect(() => {
     const receive = (event: Event) => {
       const result = (event as CustomEvent).detail;
       if (result?.item?.id) {
         setSelected(result.item.id);
         refresh();
-      } else if (result?.deleted) refresh();
+      } else if (result?.trashed) {
+        setSelected(null);
+        refresh();
+      }
     };
     window.addEventListener("dropit:result", receive);
     return () => window.removeEventListener("dropit:result", receive);
   }, [refresh]);
-  const changeStatus = (value: string) => {
-    setStatus(value);
+  const changeView = (value: (typeof views)[number]) => {
+    setView(value);
     setOffset(0);
+  };
+  const [bookmarkBusy, setBookmarkBusy] = useState<string | null>(null);
+  const bookmarkLock = useRef(false);
+  const toggleBookmark = async (item: Item) => {
+    if (bookmarkLock.current) return;
+    bookmarkLock.current = true;
+    setBookmarkBusy(item.id);
+    try {
+      await client.update(item.id, {
+        revision: item.revision,
+        isSaved: !item.isSaved,
+      });
+      refresh();
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      bookmarkLock.current = false;
+      setBookmarkBusy(null);
+    }
   };
   const signOut = async () => {
     try {
@@ -394,29 +442,25 @@ function Library({ onLogout }: { onLogout: () => void }) {
       setError(message(e));
     }
   };
-  const total = Object.values(data.counts).reduce((a, b) => a + b, 0);
+  const total = (data.counts["All drops"] ?? 0) + (data.counts.Trash ?? 0);
   return (
     <div className={`app ${embedded ? "embedded" : ""}`}>
       <aside className="sidebar">
         <Brand />
         <span className="sidebar-label">LIBRARY</span>
         <nav aria-label="Library views">
-          <button
-            className={!status ? "nav-item active" : "nav-item"}
-            onClick={() => changeStatus("")}
-          >
-            <Inbox size={18} />
-            All drops<span>{total}</span>
-          </button>
-          {statuses.map((value) => {
+          {views.map((value) => {
             const Icon = icons[value];
             return (
               <button
                 key={value}
-                className={`nav-item ${status === value ? "active" : ""}`}
-                onClick={() => changeStatus(value)}
+                className={`nav-item ${view === value ? "active" : ""}`}
+                onClick={() => changeView(value)}
               >
-                <Icon size={17} />
+                <Icon
+                  size={17}
+                  className={value === "Trash" ? "trash-nav-icon" : undefined}
+                />
                 {value}
                 <span>{data.counts[value] ?? 0}</span>
               </button>
@@ -439,7 +483,7 @@ function Library({ onLogout }: { onLogout: () => void }) {
       <main className="workspace">
         <header className="topbar">
           <span className="breadcrumb">
-            Library <span>/</span> <strong>{status || "All drops"}</strong>
+            Library <span>/</span> <strong>{view}</strong>
           </span>
           <div className="top-actions">
             {!embedded && (
@@ -490,12 +534,17 @@ function Library({ onLogout }: { onLogout: () => void }) {
           <div className="section-heading">
             <div>
               <h1>
-                {status || "All drops"}
+                {view}
                 <span className="heading-count">{data.total}</span>
               </h1>
             </div>
             <span className="saved-caption">Good things, kept.</span>
           </div>
+          {view === "Trash" && (
+            <p className="trash-notice">
+              Drops in Trash are permanently deleted after 7 days.
+            </p>
+          )}
           {query && data.searchNotice && !loading && !error && (
             <p className="field-note" role="status">
               {data.searchNotice}
@@ -567,14 +616,15 @@ function Library({ onLogout }: { onLogout: () => void }) {
               </select>
               <ChevronDown size={14} />
             </label>
-            <label className="select-wrap mobile-status">
+            <label className="select-wrap mobile-view">
               <select
-                aria-label="Status"
-                value={status}
-                onChange={(e) => changeStatus(e.target.value)}
+                aria-label="Library view"
+                value={view}
+                onChange={(e) =>
+                  changeView(e.target.value as (typeof views)[number])
+                }
               >
-                <option value="">All statuses</option>
-                {statuses.map((value) => (
+                {views.map((value) => (
                   <option key={value}>{value}</option>
                 ))}
               </select>
@@ -602,53 +652,64 @@ function Library({ onLogout }: { onLogout: () => void }) {
           ) : error ? null : data.items.length ? (
             <>
               <div className="list-labels">
-                <span>SAVED ITEM</span>
-                <span>STATUS</span>
-                <span>ADDED</span>
+                <span>DROP</span>
+                <span>{view === "Trash" ? "DELETES" : "CREATED"}</span>
+                <span>{view === "Trash" ? "" : "SAVED"}</span>
               </div>
               <div className="item-list">
                 {data.items.map((item) => (
-                  <button
-                    key={item.id}
-                    className="item-row"
-                    onClick={() => setSelected(item.id)}
-                  >
-                    <span
-                      className={`item-icon ${categoryTone(item.category)}`}
+                  <div key={item.id} className="item-row">
+                    <button
+                      className="item-open"
+                      onClick={() => setSelected(item.id)}
                     >
-                      {item.hasImage ? (
-                        <ImageIcon size={21} />
-                      ) : item.sourceUrl ? (
-                        <LinkIcon size={21} />
-                      ) : (
-                        <FileText size={21} />
-                      )}
-                    </span>
-                    <span className="item-copy">
-                      <span className="item-title">{item.title}</span>
-                      <span className="item-summary">
-                        {item.summary || item.notes || "No summary"}
+                      <span
+                        className={`item-icon ${categoryTone(item.category)}`}
+                      >
+                        {item.hasImage ? (
+                          <ImageIcon size={21} />
+                        ) : item.sourceUrl ? (
+                          <LinkIcon size={21} />
+                        ) : (
+                          <FileText size={21} />
+                        )}
                       </span>
-                      <span className="tags">
-                        <span
-                          className={`category-tag ${categoryTone(item.category)}`}
-                        >
-                          {item.category}
+                      <span className="item-copy">
+                        <span className="item-title">{item.title}</span>
+                        <span className="item-summary">
+                          {item.summary || item.notes || "No summary"}
                         </span>
-                        {item.tags.slice(0, 3).map((tag) => (
-                          <span key={tag}>#{tag}</span>
-                        ))}
+                        <span className="tags">
+                          <span
+                            className={`category-tag ${categoryTone(item.category)}`}
+                          >
+                            {item.category}
+                          </span>
+                          {item.tags.slice(0, 3).map((tag) => (
+                            <span key={tag}>#{tag}</span>
+                          ))}
+                        </span>
                       </span>
-                    </span>
-                    <span
-                      className={`status status-${item.status.toLowerCase().replace(" ", "-")}`}
-                    >
-                      <Circle size={7} fill="currentColor" />
-                      {item.status}
-                    </span>
-                    <span className="item-date">{date(item.createdAt)}</span>
-                    <ArrowUpRight className="row-arrow" size={16} />
-                  </button>
+                      <span
+                        className="item-date"
+                        title={
+                          item.deleteAfter
+                            ? deletionDate(item.deleteAfter)
+                            : undefined
+                        }
+                      >
+                        {date(item.deleteAfter ?? item.createdAt)}
+                      </span>
+                      <ArrowUpRight className="row-arrow" size={16} />
+                    </button>
+                    {!item.trashedAt && (
+                      <SaveRibbon
+                        saved={item.isSaved}
+                        disabled={bookmarkBusy !== null}
+                        onClick={() => void toggleBookmark(item)}
+                      />
+                    )}
+                  </div>
                 ))}
               </div>
               <div className="pagination">
@@ -684,14 +745,14 @@ function Library({ onLogout }: { onLogout: () => void }) {
               </h2>
               <p>
                 {total
-                  ? "No saved items match this view."
+                  ? "No drops match this view."
                   : "Keep the link. Save the screenshot. Come back to it."}
               </p>
               <button
                 className="primary"
                 onClick={() =>
                   total
-                    ? (setQuery(""), setCategory(""), changeStatus(""))
+                    ? (setQuery(""), setCategory(""), changeView("All drops"))
                     : setAdding(true)
                 }
               >
@@ -700,7 +761,7 @@ function Library({ onLogout }: { onLogout: () => void }) {
                 ) : (
                   <>
                     <Plus size={16} />
-                    Save your first drop
+                    Create your first drop
                   </>
                 )}
               </button>
@@ -1017,7 +1078,7 @@ function Capture({
               )}
               {drafted && (
                 <section className="draft-preview" aria-label="File draft">
-                  <span className="field-note">AI draft · Not saved</span>
+                  <span className="field-note">AI draft · Not created</span>
                   <h3>{title}</h3>
                   <p>{summary}</p>
                   <span className="field-note">
@@ -1097,7 +1158,7 @@ function Capture({
                   {!aiAvailable
                     ? "AI is not configured."
                     : drafted
-                      ? "AI draft · Not saved"
+                      ? "AI draft · Not created"
                       : "Processes this source with OpenAI."}
                 </span>
               </div>
@@ -1137,7 +1198,7 @@ function Capture({
                 </label>
               </div>
               <label>
-                Why I saved this
+                My notes
                 <textarea
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
@@ -1154,7 +1215,7 @@ function Capture({
               disabled={busy}
               onClick={() => void save(true)}
             >
-              Save another copy
+              Create another copy
             </button>
           )}
           <div className="panel-actions">
@@ -1163,7 +1224,7 @@ function Capture({
             </button>
             {(manual || drafted) && (
               <button className="primary" disabled={busy}>
-                {busy ? <Busy /> : <Bookmark size={16} />}Save drop
+                {busy ? <Busy /> : <Plus size={16} />}Create drop
               </button>
             )}
           </div>
@@ -1247,7 +1308,7 @@ function Detail({
   };
   return (
     <Panel
-      title="Saved item"
+      title="Drop"
       onClose={() => {
         if (!busy) onClose();
       }}
@@ -1265,11 +1326,19 @@ function Detail({
               >
                 {detail.item.category}
               </span>
-              <span>Saved {date(detail.item.createdAt)}</span>
+              <span>Created {date(detail.item.createdAt)}</span>
+              {!detail.item.trashedAt && (
+                <SaveRibbon
+                  saved={detail.item.isSaved}
+                  disabled={busy}
+                  onClick={() => void update({ isSaved: !detail.item.isSaved })}
+                />
+              )}
               <button
                 className="icon-button"
                 aria-label="Edit item"
                 title="Edit item"
+                disabled={busy || Boolean(detail.item.trashedAt)}
                 onClick={() => setEditing((v) => !v)}
               >
                 <Pencil size={16} />
@@ -1338,18 +1407,11 @@ function Detail({
                 </div>
               </>
             )}
-            <label className="status-field">
-              Status
-              <select
-                disabled={busy}
-                value={detail.item.status}
-                onChange={(e) => void update({ status: e.target.value })}
-              >
-                {statuses.map((value) => (
-                  <option key={value}>{value}</option>
-                ))}
-              </select>
-            </label>
+            {detail.item.deleteAfter && (
+              <p className="trash-notice">
+                Permanently deletes {deletionDate(detail.item.deleteAfter)}.
+              </p>
+            )}
             <div className="detail-section">
               <h3>
                 <FileText size={15} />
@@ -1428,6 +1490,7 @@ function Detail({
               </h3>
               <textarea
                 aria-label="My notes"
+                readOnly={Boolean(detail.item.trashedAt)}
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 rows={4}
@@ -1435,18 +1498,41 @@ function Detail({
                 placeholder="Why it matters. What happened next."
               />
               <button
-                disabled={busy || notes === detail.item.notes}
+                disabled={
+                  busy ||
+                  Boolean(detail.item.trashedAt) ||
+                  notes === detail.item.notes
+                }
                 onClick={() => void update({ notes })}
               >
                 Save notes
               </button>
             </div>
             <div className="delete-area" ref={wipeConfirmation}>
-              {confirmDelete ? (
+              {detail.item.trashedAt ? (
+                <button
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    setError("");
+                    try {
+                      await client.restore(id, detail.item.revision);
+                      onChange();
+                      onClose();
+                    } catch (e) {
+                      setError(message(e));
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  <RotateCcw size={16} />
+                  Restore drop
+                </button>
+              ) : confirmDelete ? (
                 <>
                   <p>
-                    Wipe this drop permanently? This cannot be undone. Its
-                    source is removed only when no other drops use it.
+                    Move this drop to Trash? You can restore it for 7 days
+                    before it is permanently deleted.
                   </p>
                   <div className="actions">
                     <button

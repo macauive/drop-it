@@ -15,7 +15,7 @@ export const categorySchema = z
       .max(60)
       .regex(/[\p{L}\p{N}]/u),
   );
-export const statuses = ["Saved", "In progress", "Done", "Dismissed"] as const;
+export const views = ["All drops", "Saved", "Trash"] as const;
 export const idSchema = z.string().uuid();
 export const urlSchema = z
   .string()
@@ -88,7 +88,7 @@ export const searchSchema = z
     query: z.string().trim().max(300).default(""),
     mode: z.enum(["keyword", "semantic", "hybrid"]).default("hybrid"),
     category: categorySchema.optional(),
-    status: z.enum(statuses).optional(),
+    view: z.enum(views).default("All drops"),
     tag: z.string().trim().max(40).optional(),
     before: z.string().datetime().optional(),
     after: z.string().datetime().optional(),
@@ -109,7 +109,7 @@ export const updateSchema = z
     notes: z.string().trim().max(8000).optional(),
     id: idSchema,
     revision: z.number().int().positive(),
-    status: z.enum(statuses).optional(),
+    isSaved: z.boolean().optional(),
   })
   .strict();
 export const deleteSchema = z
@@ -141,7 +141,9 @@ export type Item = {
   title: string;
   summary: string;
   category: string;
-  status: (typeof statuses)[number];
+  isSaved: boolean;
+  trashedAt: string | null;
+  deleteAfter: string | null;
   tags: string[];
   notes: string;
   revision: number;

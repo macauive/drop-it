@@ -148,4 +148,37 @@ export async function migrate(db: Database) {
     );
     await tx.query("INSERT INTO schema_migrations(version) VALUES(4)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=5"))
+        .rows.length
+    )
+      return;
+    await tx.query("ALTER TABLE items DROP CONSTRAINT items_status_check");
+    await tx.query(
+      "UPDATE items SET status='Archived',revision=revision+1,updated_at=now() WHERE status='Dismissed'",
+    );
+    await tx.query(
+      "ALTER TABLE items ADD CONSTRAINT items_status_check CHECK(status IN ('Saved','In progress','Done','Archived'))",
+    );
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(5)");
+  });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=6"))
+        .rows.length
+    )
+      return;
+    await tx.query(
+      "ALTER TABLE items ADD COLUMN is_saved boolean NOT NULL DEFAULT false, ADD COLUMN trashed_at timestamptz",
+    );
+    await tx.query(
+      "UPDATE items SET trashed_at=now(),revision=revision+1,updated_at=now() WHERE status='Archived'",
+    );
+    await tx.query("ALTER TABLE items DROP COLUMN status");
+    await tx.query(
+      "CREATE INDEX items_trash_expiry ON items(trashed_at) WHERE trashed_at IS NOT NULL",
+    );
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(6)");
+  });
 }
