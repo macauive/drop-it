@@ -1,0 +1,153 @@
+import { App } from "@modelcontextprotocol/ext-apps";
+import type {
+  Item,
+  Source,
+  SearchInput,
+  SearchResult,
+  SaveInput,
+} from "../shared/schema.js";
+
+type FileRef = { fileId: string; fileName?: string; mimeType?: string };
+declare global {
+  interface Window {
+    openai?: {
+      uploadFile?: (file: File) => Promise<FileRef>;
+      getFileDownloadUrl?: (input: {
+        fileId: string;
+      }) => Promise<{ downloadUrl: string }>;
+    };
+  }
+}
+export const embedded = window.parent !== window;
+export class ClientError extends Error {
+  constructor(
+    message: string,
+    public code?: string,
+  ) {
+    super(message);
+  }
+}
+type Detail = { item: Item; source: Source; imageData?: string };
+type ToolResponse = {
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+  _meta?: Record<string, unknown>;
+};
+let bridge: App | undefined;
+let connection: Promise<void> | undefined;
+async function connect() {
+  if (!connection) {
+    bridge = new App(
+      { name: "drop-it-library", version: "0.1.0" },
+      {},
+      { autoResize: true },
+    );
+    bridge.ontoolresult = (result) =>
+      window.dispatchEvent(
+        new CustomEvent("dropit:result", { detail: result.structuredContent }),
+      );
+    connection = Promise.race([
+      bridge.connect(),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error("The ChatGPT connection timed out. Reopen Drop It."),
+            ),
+          15000,
+        ),
+      ),
+    ]);
+  }
+  return connection;
+}
+async function call<T>(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  await connect();
+  const result = (await bridge!.callServerTool({
+    name,
+    arguments: args,
+  })) as ToolResponse;
+  const data = result.structuredContent;
+  if (result.isError || !data)
+    throw new ClientError(
+      typeof data?.error === "string"
+        ? data.error
+        : "The action could not be completed.",
+      typeof data?.code === "string" ? data.code : undefined,
+    );
+  return {
+    ...data,
+    ...(typeof result._meta?.imageData === "string"
+      ? { imageData: result._meta.imageData }
+      : {}),
+  } as T;
+}
+export async function api<T>(
+  path: string,
+  method = "GET",
+  body?: unknown,
+): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    credentials: "same-origin",
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const result = await response.json();
+  if (!response.ok)
+    throw new ClientError(
+      result.error ?? "The action could not be completed.",
+      result.code,
+    );
+  return result;
+}
+export const client = {
+  search: (input: SearchInput): Promise<SearchResult> =>
+    embedded ? call("search_items", input) : api("/api/search", "POST", input),
+  get: (id: string): Promise<Detail> =>
+    embedded ? call("get_item", { id }) : api(`/api/items/${id}`),
+  save: (input: SaveInput): Promise<Detail> =>
+    embedded
+      ? call("save_item", input as Record<string, unknown>)
+      : api("/api/items", "POST", input),
+  update: (id: string, fields: Record<string, unknown>): Promise<Detail> =>
+    embedded
+      ? call("update_item", { id, ...fields })
+      : api(`/api/items/${id}`, "PATCH", fields),
+  delete: (id: string, revision: number) =>
+    embedded
+      ? call("delete_item", { id, revision })
+      : api(`/api/items/${id}`, "DELETE", { revision }),
+  upload: async (file: File): Promise<{ attachmentId: string }> => {
+    if (embedded) {
+      if (!window.openai?.uploadFile || !window.openai.getFileDownloadUrl)
+        throw new Error(
+          "Attach the screenshot to your ChatGPT message and ask Drop It to save it.",
+        );
+      const ref = await window.openai.uploadFile(file);
+      const { downloadUrl } = await window.openai.getFileDownloadUrl({
+        fileId: ref.fileId,
+      });
+      return call("upload_source", {
+        file: {
+          download_url: downloadUrl,
+          file_id: ref.fileId,
+          filename: file.name,
+          mime_type: file.type,
+        },
+      });
+    }
+    const response = await fetch("/api/attachments", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": file.type },
+      body: file,
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? "Upload failed.");
+    return result;
+  },
+};
