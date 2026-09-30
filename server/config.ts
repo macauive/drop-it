@@ -45,5 +45,14 @@ export function loadConfig() {
     dataDir: resolve(process.env.DATA_DIR ?? ".data"),
     databaseUrl: process.env.DATABASE_URL || undefined,
     production: process.env.NODE_ENV === "production",
+    ai: process.env.OPENAI_API_KEY?.trim()
+      ? {
+          apiKey: process.env.OPENAI_API_KEY.trim(),
+          model: z
+            .string()
+            .regex(/^[a-zA-Z0-9._-]{1,100}$/)
+            .parse(process.env.OPENAI_MODEL ?? "gpt-5.6-luna"),
+        }
+      : undefined,
   };
 }

@@ -5,6 +5,7 @@ import type {
   SearchInput,
   SearchResult,
   SaveInput,
+  DraftResult,
 } from "../shared/schema.js";
 
 type FileRef = { fileId: string; fileName?: string; mimeType?: string };
@@ -105,6 +106,12 @@ export async function api<T>(
   return result;
 }
 export const client = {
+  draft: (
+    source: NonNullable<SaveInput["source"]>,
+  ): Promise<{ draft: DraftResult }> =>
+    embedded
+      ? call("draft_item", { source })
+      : api("/api/draft", "POST", { source }),
   search: (input: SearchInput): Promise<SearchResult> =>
     embedded ? call("search_items", input) : api("/api/search", "POST", input),
   get: (id: string): Promise<Detail> =>

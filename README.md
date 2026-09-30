@@ -15,7 +15,7 @@ Open http://localhost:4317 and create your owner password (at least 12 character
 
 `npm run dev` builds the UI once and watches server files. After UI edits, run `npm run build:web` and restart the server to load the new bundle. For a normal run after building, use `npm start`.
 
-Configuration is read from `private/.env` when present; a root `.env` is not loaded. Existing process environment variables take precedence. `.env.example` contains only safe placeholders. Keep the private directory owner-only (mode 700) and its env file owner-readable/writable only (mode 600). Data lives in `.data/postgres` by default. Back up that directory while the app is stopped. Never commit `.data`, env files, uploads, personal records, or credentials. `.gitignore` is deliberately local-only and ignores itself.
+Configuration is read from `private/.env` when present; a root `.env` is not loaded. Existing process environment variables take precedence. `.env.example` contains only safe placeholders. Keep the private directory owner-only (mode 700) and its env file owner-readable/writable only (mode 600). Data lives in `.data/postgres` by default. Back up that directory while the app is stopped. Never commit `.data`, env files, uploads, personal records, or credentials. `.gitignore` and `AGENTS.md` are deliberately local-only.
 
 ## Implemented
 
@@ -24,17 +24,27 @@ Configuration is read from `private/.env` when present; a root `.env` is not loa
 - Text/link capture and private PNG/JPEG/WebP uploads (10 MB and 25 megapixel limits; 250 MB per-owner attachment quota).
 - Original sources stored independently of editable items; multiple items may reference one source.
 - Keyword search across titles, summaries, source text, URLs, tags and notes; category/status/tag/date filters; pagination.
+- Screenshot-first capture automatically drafts a title, summary, category, tags and transcription after upload. Review before saving, or choose Enter manually to open the full text/link form and edit any draft.
+- Unified search combines literal keyword matches with meaning-based matches using owner-scoped embeddings and the same category/status/date filters. No search-mode toggle is needed.
 - Flexible owner-scoped category names with existing-category suggestions, case-insensitive reuse and filtering. Existing labels are preserved; new uncategorized saves use `Uncategorized`.
 - Source/URL duplicate warnings, explicit duplicate override, idempotent saves and optimistic edit/delete revisions.
 - Source image viewing, notes, status changes, item deletion and JSON export including original image bytes.
 - MCP tools and an inline React widget using the MCP Apps bridge. Tools remain useful without the widget.
 - Expired credential and abandoned-upload cleanup.
 
-The standalone UI accepts manually entered metadata. Inside ChatGPT, the host model interprets your screenshot and proposes metadata before calling the tools. There is no separate OCR or model API in the backend, and saving a URL does not fetch its page. Source content is untrusted data, never instructions.
+The standalone UI supports AI-assisted drafting and manual entry. Inside ChatGPT, the host model can supply metadata directly or request `draft_item`. Saving or drafting a URL does not fetch its page. Source content is untrusted data, never instructions.
+
+### AI configuration and privacy
+
+Set `OPENAI_API_KEY` in the ignored `private/.env` and restart the server to enable AI. The key stays server-side. Drafts use the Responses API with `store: false`, strict structured output and `gpt-5.6-luna` by default (`OPENAI_MODEL` can override the draft model). A draft processes up to the first 16,000 source-text characters, the URL without query/fragment, up to 100 existing category names, and an owned screenshot resized to fit 1536 x 1536. No tools or URL fetches are available to the model. Treat generated summaries and screenshot transcriptions as suggestions to review; the original screenshot is preserved separately. Drafting never saves an item, and typed source text is not overwritten by a draft.
+
+AI search sends the submitted query and bounded text from each matching drop (title, summary, category, tags, up to 1,000 note characters and 4,000 source-text characters, with a 6,000-character combined limit) to OpenAI's `text-embedding-3-small` model at 512 dimensions. Raw screenshots are not sent for search; their reviewed transcription can be indexed. Embeddings are cached in the local database, isolated by owner, invalidated on content edits and removed on deletion. This retrieves actual saved records, not a generated answer. Semantic matches use cosine similarity with a minimum score of 0.2, a heuristic rather than a calibrated confidence score. Literal matches across full source text, metadata and URLs are always included, rank first, and are deduplicated before pagination.
+
+Search is explicitly submitted rather than calling AI on every keystroke. The initial index may take longer; unchanged items reuse cached vectors. At most 1,000 filtered drops are considered for AI ranking. Hybrid search falls back to keyword results with a visible notice when AI is unavailable, fails, or the filtered library exceeds that limit. Indexing is batched and can resume from cached batches after a timeout. AI operations are limited to one concurrent request and 20 starts per minute per owner, per server process. Failed drafts are never saved automatically. `store: false` does not itself mean zero provider retention; the project's OpenAI data policies still apply. API calls incur usage charges. Manual entry and keyword retrieval do not require an API key. The API retains explicit `keyword` mode for clients that must avoid external AI calls; its default is `hybrid`.
 
 ### Categorization API status
 
-The [September 29 Decisions API announcement](https://openai.com/index/devday-2026-recap/) describes a limited preview with broad release planned in the coming days. It accepts text/images and returns finite predefined answers. That is a potential fit for selecting among the authenticated owner's existing categories, but not generating new names directly. A future integration should include an explicit no-match result and a separate new-category proposal step. Endpoint schemas and project access must be verified against published API documentation before implementation; no speculative Decisions endpoint is called today. The standalone UI remains manual, while the ChatGPT host can supply categories through `save_item`.
+The [September 29 Decisions API announcement](https://openai.com/index/devday-2026-recap/) describes a limited preview with broad release planned in the coming days. It accepts text/images and returns finite predefined answers. That is a potential fit for selecting among the authenticated owner's existing categories, but not generating new names directly. A future integration should include an explicit no-match result and a separate new-category proposal step. Endpoint schemas and project access must be verified against published API documentation before implementation; no speculative Decisions endpoint is called today. AI drafts currently use the documented Responses API.
 
 ## Storage
 
@@ -61,15 +71,16 @@ Live ChatGPT account linking and its file-transfer path must be verified in the 
 
 ## MCP tools
 
-| Tool            | Purpose                                                                                   |
-| --------------- | ----------------------------------------------------------------------------------------- |
-| `search_items`  | Search/filter the authenticated owner's library                                           |
-| `get_item`      | Read an item and immutable source; image preview is widget-only metadata                  |
-| `save_item`     | Save a source or add an item referencing an existing source; requires a retry-stable UUID |
-| `update_item`   | Edit title, summary, tags, notes, category or status using current revision               |
-| `delete_item`   | Delete an item using current revision, clean up unshared sources/images                   |
-| `upload_source` | Preserve an explicitly supplied ChatGPT image file                                        |
-| `get_profile`   | Return the stable authenticated owner ID                                                  |
+| Tool            | Purpose                                                                                                               |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `search_items`  | Search/filter the authenticated owner's library                                                                       |
+| `draft_item`    | Propose editable metadata and screenshot transcription through OpenAI; requires write scope but does not save an item |
+| `get_item`      | Read an item and immutable source; image preview is widget-only metadata                                              |
+| `save_item`     | Save a source or add an item referencing an existing source; requires a retry-stable UUID                             |
+| `update_item`   | Edit title, summary, tags, notes, category or status using current revision                                           |
+| `delete_item`   | Delete an item using current revision, clean up unshared sources/images                                               |
+| `upload_source` | Preserve an explicitly supplied ChatGPT image file                                                                    |
+| `get_profile`   | Return the stable authenticated owner ID                                                                              |
 
 ## Development and checks
 

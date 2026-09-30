@@ -327,6 +327,37 @@ p {
   gap: 12px;
   margin-bottom: 25px;
 }
+.draft-preview {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.draft-preview h3 {
+  font-size: 18px;
+  margin: 12px 0;
+}
+.draft-preview p {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.capture-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.draft-actions button {
+  flex: none;
+}
 .search {
   display: flex;
   flex-direction: row;

@@ -118,4 +118,20 @@ export async function migrate(db: Database) {
     );
     await tx.query("INSERT INTO schema_migrations(version) VALUES(2)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=3"))
+        .rows.length
+    )
+      return;
+    await tx.query(
+      "ALTER TABLE items ADD CONSTRAINT items_owner_id_unique UNIQUE(owner,id)",
+    );
+    await tx.query(`CREATE TABLE item_embeddings (
+      owner uuid NOT NULL, item_id uuid NOT NULL, model text NOT NULL,
+      fingerprint text NOT NULL, vector double precision[] NOT NULL,
+      PRIMARY KEY(owner,item_id), FOREIGN KEY(owner,item_id) REFERENCES items(owner,id) ON DELETE CASCADE
+    )`);
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(3)");
+  });
 }

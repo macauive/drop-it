@@ -13,6 +13,7 @@ import { openDatabase, migrate, type Database } from "../server/db.js";
 import { createApp } from "../server/app.js";
 import type { Config } from "../server/config.js";
 import type { Auth } from "../server/auth.js";
+import { dimensions } from "../server/ai.js";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 let server: Server,
@@ -57,12 +58,25 @@ before(async () => {
     dataDir: dir,
     databaseUrl: undefined,
     production: false,
+    ai: undefined,
   };
   const html = await readFile(
     new URL("../dist/web/index.html", import.meta.url),
     "utf8",
   );
-  const built = createApp(db, config, html);
+  const built = createApp(db, config, html, {
+    draft: async () => ({
+      title: "HTTP AI draft",
+      summary: "Drafted metadata",
+      category: "Gardening",
+      tags: ["herbs"],
+      extractedText: "",
+    }),
+    embed: async (texts) =>
+      texts.map(() =>
+        Array.from({ length: dimensions }, (_, i) => (i === 0 ? 1 : 0)),
+      ),
+  });
   auth = built.auth;
   server.on("request", built.app);
 });
@@ -79,6 +93,11 @@ test("serves a built UI with CSP, requires login, and rejects cross-origin setup
   assert.match(ui.headers.get("content-security-policy") ?? "", /sha256-/);
   assert.match(await ui.text(), /<title>Drop It<\/title>/);
   assert.equal((await request("/api/search", "POST", {})).status, 401);
+  assert.equal(
+    (await request("/api/draft", "POST", { source: { originalText: "test" } }))
+      .status,
+    401,
+  );
   assert.equal(
     (
       await request(
@@ -97,6 +116,41 @@ test("serves a built UI with CSP, requires login, and rejects cross-origin setup
   assert.match(setCookie, /SameSite=Lax/);
   cookie = setCookie.split(";")[0];
   assert.equal((await request("/api/setup", "POST", { password })).status, 409);
+});
+
+test("HTTP AI drafts require same-origin authenticated access and explicit save", async () => {
+  assert.equal(
+    (
+      await request(
+        "/api/draft",
+        "POST",
+        { source: { originalText: "herbs" } },
+        { Origin: "https://example.com" },
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await request("/api/draft", "POST", { source: {} })).status,
+    400,
+  );
+  const result = await request("/api/draft", "POST", {
+    source: { originalText: "herbs", url: "" },
+  });
+  assert.equal(result.status, 200);
+  assert.equal((await result.json()).draft.title, "HTTP AI draft");
+  assert.equal(
+    (
+      await request("/api/draft", "POST", {
+        source: { originalText: "herbs", url: "not-a-url" },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (await (await request("/api/search", "POST", {})).json()).total,
+    0,
+  );
 });
 
 test("real HTTP capture/upload/search/edit/export/delete flow preserves original screenshot", async () => {
@@ -131,6 +185,12 @@ test("real HTTP capture/upload/search/edit/export/delete flow preserves original
   const found = await search.json();
   assert.equal(found.total, 1);
   assert.deepEqual(found.categories, ["Cloud Infrastructure"]);
+  const semantic = await request("/api/search", "POST", {
+    query: "Find a useful project",
+    mode: "semantic",
+  });
+  assert.equal(semantic.status, 200);
+  assert.equal((await semantic.json()).items[0].id, detail.item.id);
   const edit = await request(`/api/items/${detail.item.id}`, "PATCH", {
     revision: 1,
     status: "Done",
@@ -315,6 +375,11 @@ test("MCP SDK client can discover tools, authenticate, and enforce read-only sco
     },
   });
   assert.equal(write.isError, true);
+  const draftDenied = await client.callTool({
+    name: "draft_item",
+    arguments: { source: { originalText: "Must not call AI" } },
+  });
+  assert.equal(draftDenied.isError, true);
   const resource = await client.readResource({
     uri: "ui://drop-it/library-v1.html",
   });

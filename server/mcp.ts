@@ -7,6 +7,7 @@ import {
   deleteSchema,
   idSchema,
   fileParamSchema,
+  draftSchema,
 } from "../shared/schema.js";
 import type { Library } from "./library.js";
 import type { Config } from "./config.js";
@@ -65,8 +66,12 @@ export function createMcpServer(
         annotations: {
           readOnlyHint: !write,
           destructiveHint: destructive,
-          openWorldHint: name === "upload_source",
-          idempotentHint: name !== "upload_source",
+          openWorldHint: [
+            "upload_source",
+            "search_items",
+            "draft_item",
+          ].includes(name),
+          idempotentHint: !["upload_source", "draft_item"].includes(name),
         },
         _meta: {
           ui: { resourceUri: uri },
@@ -123,11 +128,20 @@ export function createMcpServer(
   tool(
     "search_items",
     "Search Drop It",
-    "Use this when finding saved items. Search with concise keywords and filters, not a full question. Only these results establish what is in the library.",
+    "Find saved items. Default hybrid search includes all literal keyword matches plus meaning-based matches; text is processed by OpenAI and vectors are cached privately. Keyword matches rank first. If AI is unavailable, hybrid search returns keyword results with a searchNotice. Use mode=keyword for literal matching without external AI. Filters apply in all modes. Only returned items establish what is in the library.",
     searchSchema,
     false,
     false,
     (owner, args) => library.search(owner, args),
+  );
+  tool(
+    "draft_item",
+    "Draft a drop with AI",
+    "Create an editable draft from supplied text, a link, or an owned uploaded screenshot using OpenAI. Does not save an item. Review the draft before save_item. URLs are not fetched and screenshot transcription is inferred, not the immutable original.",
+    draftSchema,
+    true,
+    false,
+    (owner, args) => library.draft(owner, args),
   );
   tool(
     "get_item",

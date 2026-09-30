@@ -8,10 +8,15 @@ import {
   deleteSchema,
   idSchema,
   categorySchema,
+  draftSchema,
+  draftResultSchema,
   type Item,
   type Source,
+  type SearchResult,
 } from "../shared/schema.js";
 import { AppError } from "./errors.js";
+import type { AIProvider } from "./ai.js";
+import { semanticRank, type SearchDocument } from "./semantic.js";
 
 export const digest = (value: string | Buffer) =>
   createHash("sha256").update(value).digest("hex");
@@ -20,7 +25,93 @@ const selection = `SELECT i.id, i.source_id AS "sourceId", i.title, i.summary, i
   s.url AS "sourceUrl", s.attachment_id IS NOT NULL AS "hasImage"
   FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner`;
 export class Library {
-  constructor(readonly db: Database) {}
+  constructor(
+    readonly db: Database,
+    private readonly ai?: AIProvider,
+  ) {}
+  private readonly aiUsage = new Map<
+    string,
+    { start: number; count: number; busy: boolean }
+  >();
+  get aiAvailable() {
+    return Boolean(this.ai);
+  }
+  private async withAI<T>(owner: string, run: (ai: AIProvider) => Promise<T>) {
+    if (!this.ai)
+      throw new AppError(
+        503,
+        "AI_UNAVAILABLE",
+        "AI is not configured. Manual entry and keyword search are still available.",
+      );
+    const now = Date.now();
+    for (const [id, usage] of this.aiUsage)
+      if (!usage.busy && now - usage.start >= 60000) this.aiUsage.delete(id);
+    const usage = this.aiUsage.get(owner) ?? {
+      start: now,
+      count: 0,
+      busy: false,
+    };
+    if (usage.busy || usage.count >= 20)
+      throw new AppError(
+        429,
+        "AI_BUSY",
+        "Please wait before starting another AI request.",
+      );
+    usage.count++;
+    usage.busy = true;
+    this.aiUsage.set(owner, usage);
+    try {
+      return await run(this.ai);
+    } finally {
+      usage.busy = false;
+    }
+  }
+  async draft(owner: string, input: unknown) {
+    const { source } = draftSchema.parse(input);
+    let image: string | undefined;
+    if (source.attachmentId) {
+      const { rows } = await this.db.query<{ bytes: Uint8Array }>(
+        "SELECT bytes FROM attachments WHERE owner=$1 AND id=$2",
+        [owner, source.attachmentId],
+      );
+      if (!rows[0])
+        throw new AppError(404, "NOT_FOUND", "Attachment unavailable.");
+      const preview = await sharp(Buffer.from(rows[0].bytes), {
+        limitInputPixels: 25_000_000,
+      })
+        .rotate()
+        .resize({
+          width: 1536,
+          height: 1536,
+          fit: "inside",
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: 85 })
+        .toBuffer();
+      image = `data:image/jpeg;base64,${preview.toString("base64")}`;
+    }
+    const { rows } = await this.db.query<{ category: string }>(
+      "SELECT category FROM items WHERE owner=$1 GROUP BY category ORDER BY count(*) DESC,category LIMIT 100",
+      [owner],
+    );
+    const url = source.url ? new URL(source.url) : null;
+    return this.withAI(owner, async (ai) => {
+      const draft = draftResultSchema.parse(
+        await ai.draft({
+          text: source.originalText.slice(0, 16000),
+          url: url ? `${url.origin}${url.pathname}` : "",
+          categories: rows.map((row) => categorySchema.parse(row.category)),
+          image,
+        }),
+      );
+      draft.category = await this.canonicalCategory(
+        owner,
+        draft.category,
+        this.db,
+      );
+      return { draft };
+    });
+  }
   private async canonicalCategory(
     owner: string,
     category: string,
@@ -105,15 +196,24 @@ export class Library {
     if (!rows[0]) throw new AppError(404, "NOT_FOUND", "Image unavailable.");
     return { bytes: Buffer.from(rows[0].bytes), mime: rows[0].mime };
   }
-  async search(owner: string, input: unknown) {
+  async search(owner: string, input: unknown): Promise<SearchResult> {
     const q = searchSchema.parse(input);
+    const keywordFallback = async (searchNotice: string) => ({
+      ...(await this.search(owner, { ...q, mode: "keyword" })),
+      searchNotice,
+    });
+    if (q.mode === "hybrid" && q.query && !this.aiAvailable)
+      return keywordFallback(
+        "Showing keyword matches. AI search is unavailable.",
+      );
     const params: unknown[] = [owner];
     const where = ["i.owner=$1"];
     const add = (expression: string, value: unknown) => {
       params.push(value);
       where.push(expression.replace("?", `$${params.length}`));
     };
-    if (q.query) {
+    const semantic = q.mode !== "keyword" && Boolean(q.query);
+    if (q.query && !semantic) {
       // Literal substring terms: SQL wildcards from input do not widen the search.
       for (const term of q.query.toLowerCase().split(/\s+/).slice(0, 12)) {
         add(
@@ -132,10 +232,73 @@ export class Library {
       `SELECT count(*) FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE ${filtered}`,
       params,
     );
-    const { rows: items } = await this.db.query<Item>(
+    let { rows: items } = await this.db.query<Item>(
       `${selection} WHERE ${filtered} ORDER BY i.created_at DESC,i.id LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, q.limit, q.offset],
     );
+    let resultTotal = Number(total.rows[0].count);
+    if (semantic) {
+      if (resultTotal > 1000 && q.mode === "hybrid")
+        return keywordFallback(
+          "Showing keyword matches. Narrow the filters to include AI matches in libraries over 1,000 drops.",
+        );
+      if (resultTotal > 1000)
+        throw new AppError(
+          400,
+          "AI_SEARCH_SIZE",
+          "AI search currently supports up to 1,000 drops at once. Narrow the category or status, or use keyword search.",
+        );
+      const docs = await this.db.query<
+        SearchDocument & { keywordMatch: boolean }
+      >(
+        `SELECT i.id,i.revision,i.title,i.summary,i.category,i.tags,i.notes,s.original_text AS "originalText",
+        NOT EXISTS (SELECT 1 FROM unnest($${params.length + 1}::text[]) AS term
+          WHERE strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,s.original_text,s.url)),term)=0) AS "keywordMatch"
+        FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE ${filtered} ORDER BY i.id`,
+        [...params, q.query.toLowerCase().split(/\s+/).slice(0, 12)],
+      );
+      let ranked: { id: string; revision: number; score: number }[];
+      try {
+        ranked = await this.withAI(owner, (ai) =>
+          semanticRank(this.db, ai, owner, q.query, docs.rows),
+        );
+      } catch (error) {
+        if (
+          q.mode === "hybrid" &&
+          error instanceof AppError &&
+          error.code.startsWith("AI_")
+        )
+          return keywordFallback(
+            "Showing keyword matches. AI search could not complete; try again shortly.",
+          );
+        throw error;
+      }
+      const byRank = new Map(ranked.map((entry) => [entry.id, entry]));
+      for (const doc of docs.rows) {
+        if (doc.keywordMatch) {
+          const entry = byRank.get(doc.id);
+          byRank.set(doc.id, {
+            id: doc.id,
+            revision: doc.revision,
+            score: 2 + (entry?.score ?? 0),
+          });
+        }
+      }
+      ranked = [...byRank.values()].sort(
+        (a, b) => b.score - a.score || a.id.localeCompare(b.id),
+      );
+      const current = await this.db.query<Item>(
+        `${selection} WHERE ${filtered} AND i.id=ANY($${params.length + 1}::uuid[])`,
+        [...params, ranked.map((entry) => entry.id)],
+      );
+      const byId = new Map(current.rows.map((item) => [item.id, item]));
+      const results = ranked.flatMap((entry) => {
+        const item = byId.get(entry.id);
+        return item && item.revision === entry.revision ? [item] : [];
+      });
+      resultTotal = results.length;
+      items = results.slice(q.offset, q.offset + q.limit);
+    }
     const stats = await this.db.query<{ status: string; count: string }>(
       "SELECT status,count(*) FROM items WHERE owner=$1 GROUP BY status",
       [owner],
@@ -146,10 +309,12 @@ export class Library {
     );
     return {
       items,
+      aiAvailable: this.aiAvailable,
+      mode: semantic ? q.mode : ("keyword" as const),
       categories: categoryRows.rows.map((row) =>
         categorySchema.parse(row.category),
       ),
-      total: Number(total.rows[0].count),
+      total: resultTotal,
       counts: Object.fromEntries(
         stats.rows.map((row) => [row.status, Number(row.count)]),
       ),
@@ -299,6 +464,15 @@ export class Library {
           409,
           "CONFLICT",
           "This item changed elsewhere. Reopen it before editing.",
+        );
+      if (
+        ["title", "summary", "category", "tags", "notes"].some(
+          (field) => field in data,
+        )
+      )
+        await tx.query(
+          "DELETE FROM item_embeddings WHERE owner=$1 AND item_id=$2",
+          [owner, data.id],
         );
       return this.get(owner, data.id, tx);
     });

@@ -23,12 +23,16 @@ export const urlSchema = z
   .max(2048)
   .url()
   .refine((value) => {
-    const url = new URL(value);
-    return (
-      ["https:", "http:"].includes(url.protocol) &&
-      !url.username &&
-      !url.password
-    );
+    try {
+      const url = new URL(value);
+      return (
+        ["https:", "http:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password
+      );
+    } catch {
+      return false;
+    }
   }, "Use an HTTP or HTTPS URL without credentials.");
 export const fieldsSchema = z.object({
   title: z.string().trim().min(1).max(200),
@@ -48,6 +52,24 @@ export const sourceInputSchema = z
     attachmentId: idSchema.optional(),
   })
   .strict();
+export const draftSchema = z
+  .object({ source: sourceInputSchema })
+  .strict()
+  .refine(
+    ({ source }) =>
+      Boolean(source.originalText.trim() || source.url || source.attachmentId),
+    "Add text, a link, or a screenshot first.",
+  );
+export const draftResultSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    summary: z.string().trim().max(4000),
+    category: categorySchema,
+    tags: z.array(z.string().trim().min(1).max(40)).max(12),
+    extractedText: z.string().max(12000),
+  })
+  .strict();
+export type DraftResult = z.infer<typeof draftResultSchema>;
 export const saveSchema = fieldsSchema
   .extend({
     requestId: idSchema,
@@ -63,6 +85,7 @@ export const saveSchema = fieldsSchema
 export const searchSchema = z
   .object({
     query: z.string().trim().max(300).default(""),
+    mode: z.enum(["keyword", "semantic", "hybrid"]).default("hybrid"),
     category: categorySchema.optional(),
     status: z.enum(statuses).optional(),
     tag: z.string().trim().max(40).optional(),
@@ -128,4 +151,7 @@ export type SearchResult = {
   total: number;
   counts: Record<string, number>;
   categories: string[];
+  aiAvailable: boolean;
+  mode: "keyword" | "semantic" | "hybrid";
+  searchNotice?: string;
 };

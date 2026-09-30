@@ -17,11 +17,20 @@ import { Library } from "./library.js";
 import { createMcpServer } from "./mcp.js";
 import { AppError } from "./errors.js";
 import { searchSchema, idSchema } from "../shared/schema.js";
+import { OpenAIProvider, type AIProvider } from "./ai.js";
 
-export function createApp(db: Database, config: Config, html: string) {
+export function createApp(
+  db: Database,
+  config: Config,
+  html: string,
+  ai?: AIProvider,
+) {
   const app = express();
   const auth = new Auth(db, config),
-    library = new Library(db);
+    library = new Library(
+      db,
+      ai ?? (config.ai ? new OpenAIProvider(config.ai) : undefined),
+    );
   const cookie = config.local ? "drop_it_session" : "__Host-drop_it_session";
   const cookieOptions = {
     httpOnly: true,
@@ -207,6 +216,9 @@ export function createApp(db: Database, config: Config, html: string) {
       await library.search(res.locals.owner, searchSchema.parse(req.body)),
     ),
   );
+  app.post("/api/draft", async (req, res) =>
+    res.json(await library.draft(res.locals.owner, req.body)),
+  );
   app.post("/api/items", async (req, res) =>
     res.status(201).json(await library.save(res.locals.owner, req.body)),
   );
@@ -304,12 +316,10 @@ export function createApp(db: Database, config: Config, html: string) {
         return;
       }
       if (error instanceof z.ZodError) {
-        res
-          .status(400)
-          .json({
-            error: "Some fields are invalid. Check their format and length.",
-            code: "VALIDATION",
-          });
+        res.status(400).json({
+          error: "Some fields are invalid. Check their format and length.",
+          code: "VALIDATION",
+        });
         return;
       }
       const status = (error as { status?: number })?.status;
@@ -321,7 +331,16 @@ export function createApp(db: Database, config: Config, html: string) {
         res.status(400).json({ error: "Invalid request body." });
         return;
       }
-      console.error("Request failed", { code: "INTERNAL_ERROR" });
+      console.error("Request failed", {
+        code: "INTERNAL_ERROR",
+        kind: error instanceof TypeError ? "TYPE_ERROR" : "UNKNOWN",
+        location:
+          error instanceof Error
+            ? error.stack?.match(
+                /(?:server|shared)\/[a-z.-]+\.(?:ts|js):\d+:\d+/,
+              )?.[0]
+            : undefined,
+      });
       res.status(500).json({ error: "Something went wrong. Please retry." });
     },
   );

@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import {
   ArrowDownToLine,
   Droplet,
+  Sparkles,
+  ArrowRight,
   ArrowUpRight,
   Bookmark,
   Check,
@@ -311,6 +313,7 @@ function Consent({ id }: { id: string }) {
 }
 
 function Library({ onLogout }: { onLogout: () => void }) {
+  const [searchDraft, setSearchDraft] = useState("");
   const [query, setQuery] = useState(""),
     [status, setStatus] = useState(""),
     [category, setCategory] = useState("");
@@ -319,6 +322,8 @@ function Library({ onLogout }: { onLogout: () => void }) {
       total: 0,
       counts: {},
       categories: [],
+      aiAvailable: false,
+      mode: "keyword",
     }),
     [loading, setLoading] = useState(true),
     [error, setError] = useState("");
@@ -337,6 +342,7 @@ function Library({ onLogout }: { onLogout: () => void }) {
         client
           .search({
             query,
+            mode: "hybrid",
             status: (status as Item["status"]) || undefined,
             category: (category as Item["category"]) || undefined,
             offset,
@@ -484,30 +490,55 @@ function Library({ onLogout }: { onLogout: () => void }) {
             </div>
             <span className="saved-caption">Good things, kept.</span>
           </div>
-          <div className="filters">
+          {query && data.searchNotice && !loading && !error && (
+            <p className="field-note" role="status">
+              {data.searchNotice}
+            </p>
+          )}
+          <form
+            className="filters"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setQuery(searchDraft.trim());
+              setOffset(0);
+              refresh();
+            }}
+          >
             <label className="search">
               <Search size={18} />
               <input
                 aria-label="Search your library"
-                placeholder="Find something you saved..."
-                value={query}
+                placeholder="What do you want to find?"
+                title="Search by words and meaning. AI search processes your query and saved drop text with OpenAI."
+                value={searchDraft}
+                maxLength={300}
                 onChange={(e) => {
-                  setQuery(e.target.value);
-                  setOffset(0);
+                  setSearchDraft(e.target.value);
                 }}
               />
-              {query && (
+              {searchDraft && (
                 <button
+                  type="button"
                   className="icon-button"
                   aria-label="Clear search"
                   onClick={() => {
                     setQuery("");
+                    setSearchDraft("");
                     setOffset(0);
                   }}
                 >
                   <X size={15} />
                 </button>
               )}
+              <button
+                className="icon-button"
+                type="submit"
+                aria-label="Run search"
+                title="Search"
+                disabled={loading}
+              >
+                <ArrowRight size={17} />
+              </button>
             </label>
             <label className="select-wrap">
               <select
@@ -543,7 +574,7 @@ function Library({ onLogout }: { onLogout: () => void }) {
               </select>
               <ChevronDown size={14} />
             </label>
-          </div>
+          </form>
           <Alert text={error} />
           {error && <button onClick={refresh}>Retry</button>}
           {notice && (
@@ -562,7 +593,7 @@ function Library({ onLogout }: { onLogout: () => void }) {
             <div className="loading">
               <Busy />
             </div>
-          ) : data.items.length ? (
+          ) : error ? null : data.items.length ? (
             <>
               <div className="list-labels">
                 <span>SAVED ITEM</span>
@@ -691,6 +722,7 @@ function Library({ onLogout }: { onLogout: () => void }) {
       {adding && (
         <Capture
           categories={data.categories}
+          aiAvailable={data.aiAvailable}
           onClose={() => setAdding(false)}
           onSaved={(item) => {
             setAdding(false);
@@ -767,10 +799,12 @@ function Capture({
   onClose,
   onSaved,
   categories,
+  aiAvailable,
 }: {
   onClose: () => void;
   onSaved: (item: Item) => void;
   categories: string[];
+  aiAvailable: boolean;
 }) {
   const [title, setTitle] = useState(""),
     [summary, setSummary] = useState(""),
@@ -784,6 +818,9 @@ function Capture({
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [duplicate, setDuplicate] = useState(false);
+  const [drafted, setDrafted] = useState(false),
+    [drafting, setDrafting] = useState(false);
+  const [manual, setManual] = useState(false);
   const upload = useRef<{ file: File; id: string } | null>(null);
   const attempt = useRef<{ signature: string; requestId: string } | null>(null);
   useEffect(
@@ -793,6 +830,7 @@ function Capture({
     [preview],
   );
   const pick = (next: File | undefined) => {
+    if (busy) return;
     if (!next) return;
     if (
       !["image/png", "image/jpeg", "image/webp"].includes(next.type) ||
@@ -804,15 +842,54 @@ function Capture({
     setFile(next);
     setPreview(URL.createObjectURL(next));
     setError("");
+    if (!manual) {
+      setDrafted(false);
+      setTitle("");
+      setSummary("");
+      setCategory("");
+      setTags("");
+      setText("");
+      if (aiAvailable) void draft(next);
+    }
+  };
+  const sourceInput = async (selected = file, screenshotOnly = false) => {
+    if (selected && upload.current?.file !== selected) {
+      const result = await client.upload(selected);
+      upload.current = { file: selected, id: result.attachmentId };
+    }
+    return {
+      originalText: screenshotOnly ? "" : text,
+      url: screenshotOnly ? "" : url,
+      attachmentId: selected ? upload.current?.id : undefined,
+    };
+  };
+  const draft = async (screenshot?: File) => {
+    setBusy(true);
+    setDrafting(true);
+    setError("");
+    setDuplicate(false);
+    try {
+      const { draft } = await client.draft(
+        await sourceInput(screenshot ?? file, Boolean(screenshot)),
+      );
+      setTitle(draft.title);
+      setSummary(draft.summary);
+      setCategory(draft.category);
+      setTags(draft.tags.join(", "));
+      if (screenshot || !text.trim()) setText(draft.extractedText);
+      setDrafted(true);
+    } catch (error) {
+      setError(message(error));
+    } finally {
+      setBusy(false);
+      setDrafting(false);
+    }
   };
   const save = async (allowDuplicate = false) => {
     setBusy(true);
     setError("");
     try {
-      if (file && upload.current?.file !== file) {
-        const result = await client.upload(file);
-        upload.current = { file, id: result.attachmentId };
-      }
+      const source = await sourceInput();
       const fields = {
         title,
         summary,
@@ -822,11 +899,7 @@ function Capture({
           .map((v) => v.trim())
           .filter(Boolean),
         notes,
-        source: {
-          originalText: text,
-          url,
-          attachmentId: file ? upload.current?.id : undefined,
-        },
+        source,
         allowDuplicate,
       };
       const signature = JSON.stringify(fields);
@@ -855,128 +928,212 @@ function Capture({
         className="panel-body capture"
         onSubmit={(e) => {
           e.preventDefault();
-          void save();
+          if (manual || drafted) void save();
         }}
       >
-        <label>
-          Title
-          <input
-            autoFocus
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Something worth coming back to"
-            required
-            maxLength={200}
-          />
-        </label>
-        <label
-          className={`upload-area ${file ? "has-file" : ""}`}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            pick(e.dataTransfer.files[0]);
-          }}
-        >
-          {file && preview ? (
-            <img src={preview} alt="Selected screenshot" />
-          ) : (
-            <>
-              <ImageIcon size={27} />
-              <span>Add a screenshot</span>
-              <span className="field-note">PNG, JPEG, WebP · Up to 10 MB</span>
-            </>
-          )}
-          <input
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            aria-label="Upload screenshot"
-            onChange={(e) => pick(e.target.files?.[0])}
-          />
-        </label>
-        {file && (
-          <div className="file-label">
-            <span>{file.name}</span>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Remove screenshot"
-              onClick={() => {
-                setFile(null);
-                setPreview("");
-              }}
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
-        <label>
-          Source link
-          <input
-            type="url"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://"
-            maxLength={2048}
-          />
-        </label>
-        <label>
-          Original text
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="The original passage or screenshot transcription"
-            maxLength={50000}
-            rows={4}
-          />
-        </label>
-        <label>
-          Summary
-          <textarea
-            value={summary}
-            onChange={(e) => setSummary(e.target.value)}
-            maxLength={4000}
-            rows={2}
-          />
-        </label>
-        <div className="form-grid">
-          <CategoryField
-            value={category}
-            onChange={setCategory}
-            categories={categories}
-          />
-          <label>
-            Tags
+        <fieldset disabled={busy} className="capture-fields">
+          <label
+            className={`upload-area ${file ? "has-file" : ""}`}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              pick(e.dataTransfer.files[0]);
+            }}
+          >
+            {file && preview ? (
+              <img src={preview} alt="Selected screenshot" />
+            ) : (
+              <>
+                <ImageIcon size={27} />
+                <span>Add a screenshot</span>
+                <span className="field-note">
+                  PNG, JPEG, WebP · Up to 10 MB
+                </span>
+              </>
+            )}
             <input
-              value={tags}
-              onChange={(e) => setTags(e.target.value)}
-              placeholder="python, weekend"
-              maxLength={480}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              aria-label="Upload screenshot"
+              onChange={(e) => pick(e.target.files?.[0])}
             />
           </label>
-        </div>
-        <label>
-          Why I saved this
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            maxLength={8000}
-            rows={2}
-          />
-        </label>
-        <Alert text={error} />
-        {duplicate && (
-          <button type="button" disabled={busy} onClick={() => void save(true)}>
-            Save another copy
-          </button>
-        )}
-        <div className="panel-actions">
-          <button type="button" disabled={busy} onClick={onClose}>
-            Cancel
-          </button>
-          <button className="primary" disabled={busy}>
-            {busy ? <Busy /> : <Bookmark size={16} />}Save drop
-          </button>
-        </div>
+          {file && (
+            <div className="file-label">
+              <span>{file.name}</span>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Remove screenshot"
+                onClick={() => {
+                  setFile(null);
+                  setPreview("");
+                  if (!manual) {
+                    setDrafted(false);
+                    setTitle("");
+                    setSummary("");
+                    setCategory("");
+                    setTags("");
+                    setText("");
+                  }
+                }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
+          {!manual && (
+            <>
+              {drafting && (
+                <div className="draft-actions" role="status">
+                  <Busy />
+                  <span>Drafting...</span>
+                </div>
+              )}
+              {drafted && (
+                <section
+                  className="draft-preview"
+                  aria-label="Screenshot draft"
+                >
+                  <span className="field-note">AI draft · Not saved</span>
+                  <h3>{title}</h3>
+                  <p>{summary}</p>
+                  <span className="field-note">
+                    {[category, ...tags.split(", ")]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                </section>
+              )}
+              <div className="draft-actions">
+                <button type="button" onClick={() => setManual(true)}>
+                  Enter manually
+                </button>
+                {file && !drafted && !drafting && aiAvailable && (
+                  <button type="button" onClick={() => void draft(file)}>
+                    <Sparkles size={16} />
+                    Retry draft
+                  </button>
+                )}
+              </div>
+              {!drafted && !drafting && (
+                <span className="field-note">
+                  {aiAvailable
+                    ? "Screenshots are processed with OpenAI."
+                    : "AI is unavailable. Enter details manually."}
+                </span>
+              )}
+            </>
+          )}
+          {manual && (
+            <>
+              <label>
+                Source link
+                <input
+                  type="url"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://"
+                  maxLength={2048}
+                />
+              </label>
+              <label>
+                Text / screenshot transcription
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder="Paste a passage, a quick idea, or screenshot text..."
+                  maxLength={50000}
+                  rows={4}
+                />
+              </label>
+              <div className="draft-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => void draft()}
+                  disabled={
+                    !aiAvailable || (!text.trim() && !url.trim() && !file)
+                  }
+                >
+                  {drafting ? <Busy /> : <Sparkles size={16} />}
+                  {drafting ? "Drafting..." : "Draft with AI"}
+                </button>
+                <span className="field-note">
+                  {!aiAvailable
+                    ? "AI is not configured."
+                    : drafted
+                      ? "AI draft · Not saved"
+                      : "Processes this source with OpenAI."}
+                </span>
+              </div>
+              <label>
+                Title
+                <input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Something worth coming back to"
+                  required
+                  maxLength={200}
+                />
+              </label>
+              <label>
+                Summary
+                <textarea
+                  value={summary}
+                  onChange={(e) => setSummary(e.target.value)}
+                  maxLength={4000}
+                  rows={2}
+                />
+              </label>
+              <div className="form-grid">
+                <CategoryField
+                  value={category}
+                  onChange={setCategory}
+                  categories={categories}
+                />
+                <label>
+                  Tags
+                  <input
+                    value={tags}
+                    onChange={(e) => setTags(e.target.value)}
+                    placeholder="python, weekend"
+                    maxLength={480}
+                  />
+                </label>
+              </div>
+              <label>
+                Why I saved this
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  maxLength={8000}
+                  rows={2}
+                />
+              </label>
+            </>
+          )}
+          <Alert text={error} />
+          {duplicate && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void save(true)}
+            >
+              Save another copy
+            </button>
+          )}
+          <div className="panel-actions">
+            <button type="button" disabled={busy} onClick={onClose}>
+              Cancel
+            </button>
+            {(manual || drafted) && (
+              <button className="primary" disabled={busy}>
+                {busy ? <Busy /> : <Bookmark size={16} />}Save drop
+              </button>
+            )}
+          </div>
+        </fieldset>
       </form>
     </Panel>
   );
