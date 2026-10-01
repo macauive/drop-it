@@ -94,6 +94,19 @@ test("file-import SSRF defenses reject host, scheme, credential and port bypasse
   assert.equal(request.mock.callCount(), 0);
 });
 
+test("rejected download diagnostics expose only the hostname, never signed URLs or credentials", async () => {
+  await assert.rejects(importChatGPTFile(unusedLibrary, owner, {
+    ...file,
+    download_url: "https://synthetic-user:synthetic-password@other.example/private-path?signature=synthetic-secret",
+  }), (error: unknown) => {
+    assert.ok(error instanceof AppError);
+    assert.equal(error.code, "FILE_HOST");
+    assert.match(error.message, /other\.example/);
+    assert.doesNotMatch(error.message, /synthetic|private-path|signature|https:/);
+    return true;
+  });
+});
+
 test("allowed imports disable redirects, bound download time and retain the authenticated owner", async (t) => {
   const bytes = Buffer.from("Synthetic source text");
   let requestSignal: AbortSignal | null | undefined;

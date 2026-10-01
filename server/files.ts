@@ -21,7 +21,7 @@ export async function importChatGPTFile(
     throw new AppError(
       400,
       "FILE_HOST",
-      "Unsupported file host. Upload the file through Drop It instead.",
+      `Unsupported file host (${url.hostname.slice(0, 253) || "no hostname"}). Upload the file through Drop It instead.`,
     );
   }
   const controller = new AbortController();
