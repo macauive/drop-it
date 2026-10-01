@@ -159,7 +159,7 @@ export const client = {
   download: async (id: string) => {
     // Refresh authorization and expiration before exporting, rather than
     // downloading bytes retained by an old widget instance.
-    const detail = await call<Detail>("get_item", { id });
+    const detail = await call<Detail>("get_drop", { id });
     const data = detail.fileData ?? detail.imageData;
     if (!data || !detail.source.filename)
       throw new Error("The original file is no longer available.");
@@ -175,27 +175,27 @@ export const client = {
     source: NonNullable<SaveInput["source"]>,
   ): Promise<{ draft: DraftResult }> =>
     embedded
-      ? call("draft_item", { source })
+      ? call("draft_drop", { source })
       : api("/api/draft", "POST", { source }),
   search: (input: SearchInput): Promise<SearchResult> =>
-    embedded ? call("search_items", input) : api("/api/search", "POST", input),
+    embedded ? call("search_drops", input) : api("/api/search", "POST", input),
   get: (id: string): Promise<Detail> =>
-    embedded ? call("get_item", { id }) : api(`/api/items/${id}`),
+    embedded ? call("get_drop", { id }) : api(`/api/items/${id}`),
   save: (input: SaveInput): Promise<Detail> =>
     embedded
-      ? call("save_item", input as Record<string, unknown>)
+      ? call("save_drop", input as Record<string, unknown>)
       : api("/api/items", "POST", input),
   update: (id: string, fields: Record<string, unknown>): Promise<Detail> =>
     embedded
-      ? call("update_item", { id, ...fields })
+      ? call("update_drop", { id, ...fields })
       : api(`/api/items/${id}`, "PATCH", fields),
   delete: (id: string, revision: number) =>
     embedded
-      ? call("delete_item", { id, revision })
+      ? call("wipe_drop", { id, revision })
       : api(`/api/items/${id}`, "DELETE", { revision }),
   restore: (id: string, revision: number): Promise<Detail> =>
     embedded
-      ? call("restore_item", { id, revision })
+      ? call("restore_drop", { id, revision })
       : api(`/api/items/${id}/restore`, "POST", { revision }),
   upload: async (
     file: File,

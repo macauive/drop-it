@@ -268,21 +268,21 @@ test("write-only MCP tokens cannot retrieve existing content through save, edit,
   try {
     for (const call of [
       {
-        name: "save_item",
+        name: "save_drop",
         arguments: {
           requestId: randomUUID(),
           title: "Probe source",
           sourceId: saved.source.id,
         },
       },
-      { name: "update_item", arguments: { id: saved.item.id, revision: 1 } },
-      { name: "restore_item", arguments: { id: saved.item.id, revision: 1 } },
+      { name: "update_drop", arguments: { id: saved.item.id, revision: 1 } },
+      { name: "restore_drop", arguments: { id: saved.item.id, revision: 1 } },
       {
-        name: "draft_item",
+        name: "draft_drop",
         arguments: { source: { attachmentId: file.attachmentId } },
       },
-      { name: "get_item", arguments: { id: saved.item.id } },
-      { name: "search_items", arguments: {} },
+      { name: "get_drop", arguments: { id: saved.item.id } },
+      { name: "search_drops", arguments: {} },
       { name: "get_profile", arguments: {} },
     ]) {
       const result = await client.callTool(call);
@@ -292,10 +292,10 @@ test("write-only MCP tokens cannot retrieve existing content through save, edit,
     }
     const tools = await client.listTools();
     for (const name of [
-      "save_item",
-      "update_item",
-      "restore_item",
-      "draft_item",
+      "save_drop",
+      "update_drop",
+      "restore_drop",
+      "draft_drop",
     ]) {
       const meta = tools.tools.find((tool) => tool.name === name)?._meta;
       assert.deepEqual(meta?.securitySchemes, [
@@ -309,7 +309,7 @@ test("write-only MCP tokens cannot retrieve existing content through save, edit,
   const full = await mcpClient(["library:read", "library:write"]);
   try {
     const result = await full.client.callTool({
-      name: "update_item",
+      name: "update_drop",
       arguments: { id: saved.item.id, revision: 1, notes: "Authorized update" },
     });
     assert.notEqual(result.isError, true);
@@ -324,12 +324,12 @@ test("read-only MCP tokens reject all writes and cross-owner reads do not disclo
   const readonly = await mcpClient(["library:read"]);
   try {
     for (const call of [
-      { name: "save_item", arguments: input("Denied save") },
-      { name: "update_item", arguments: { id: saved.item.id, revision: 1 } },
-      { name: "delete_item", arguments: { id: saved.item.id, revision: 1 } },
-      { name: "restore_item", arguments: { id: saved.item.id, revision: 1 } },
+      { name: "save_drop", arguments: input("Denied save") },
+      { name: "update_drop", arguments: { id: saved.item.id, revision: 1 } },
+      { name: "wipe_drop", arguments: { id: saved.item.id, revision: 1 } },
+      { name: "restore_drop", arguments: { id: saved.item.id, revision: 1 } },
       {
-        name: "draft_item",
+        name: "draft_drop",
         arguments: { source: { originalText: "Denied AI" } },
       },
       {
@@ -355,7 +355,7 @@ test("read-only MCP tokens reject all writes and cross-owner reads do not disclo
   const foreign = await mcpClient(["library:read", "library:write"], other);
   try {
     const result = await foreign.client.callTool({
-      name: "get_item",
+      name: "get_drop",
       arguments: { id: saved.item.id },
     });
     assert.equal(result.isError, true);

@@ -152,3 +152,17 @@ and resolve any scan findings before requesting final submission approval.
 
 These standalone checks and successful MCP discovery do not establish that all
 eight model-driven review scenarios have passed using the reviewer account.
+
+## Pre-launch tool naming
+
+The public MCP identifiers now use drops consistently: `search_drops`,
+`draft_drop`, `get_drop`, `save_drop`, `update_drop`, `wipe_drop`, and
+`restore_drop`. `upload_source` and `get_profile` retain their names. Earlier
+sections record the tool names used at the time of those historical checks.
+
+`wipe_drop` still moves one owned drop to seven-day Trash using its current
+revision. The rename changes no stored data, HTTP routes, ownership checks,
+OAuth scopes, annotations, or retention behavior. The widget uses resource
+`ui://drop-it/library-v4.html`; refresh the installed plugin's tools and reopen
+old widgets after deployment. Review scenarios and the draft ZIP use the new
+identifiers. No duplicate legacy tools are exposed.

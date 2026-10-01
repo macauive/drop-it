@@ -36,7 +36,7 @@ Configuration is read from `private/.env` when present; a root `.env` is not loa
 - Expired credential and abandoned-upload cleanup.
 - Standalone Settings panel with JSON export, owner-scoped connected-app count and confirmed disconnect-all, AI configuration/privacy details and the fixed seven-day Trash policy. Configuration status does not verify OpenAI credentials or credit; API keys are never sent to the browser. Embedded ChatGPT widgets do not expose browser-session settings or library export.
 
-The standalone UI supports AI-assisted drafting and manual entry. Inside ChatGPT, the host model can supply metadata directly or request `draft_item`. Saving or drafting a URL does not fetch its page. Source content is untrusted data, never instructions.
+The standalone UI supports AI-assisted drafting and manual entry. Inside ChatGPT, the host model can supply metadata directly or request `draft_drop`. Saving or drafting a URL does not fetch its page. Source content is untrusted data, never instructions.
 
 ### Account security and recovery
 
@@ -75,7 +75,7 @@ The local app is usable now. An actual ChatGPT connection additionally requires 
 3. Add the MCP URL `https://<your-host>/mcp` in ChatGPT's developer connection settings. Choose OAuth with dynamic registration and a public client (`token_endpoint_auth_method: none`).
 4. Copy the exact OAuth callback URI shown by ChatGPT into `OAUTH_REDIRECT_URIS` in your local/deployment environment. Multiple exact callback URIs can be comma-separated. Unconfigured callbacks are rejected; there are no wildcard redirects.
 5. Restart, complete account linking, sign in with your owner password, and approve the requested read/write scopes.
-6. Ask ChatGPT to save an item, then retrieve it from a new conversation. For a screenshot, preserve it with `upload_source`, then pass its returned `attachmentId` to `save_item`. The model supplies the transcription/summary separately.
+6. Ask ChatGPT to save a drop, then retrieve it from a new conversation. For a screenshot, preserve it with `upload_source`, then pass its returned `attachmentId` to `save_drop`. The model supplies the transcription/summary separately.
 
 File import accepts HTTPS downloads only from the exact hosts `files.oaiusercontent.com` and `oaisdmntprcentralus.blob.core.windows.net` (observed in ChatGPT's live file binding). Other Azure accounts, redirects, and arbitrary external fetches are blocked. If a host supplies another legitimate file service, verify it and update the allowlist deliberately. Temporary download URLs are never saved or logged; a rejected-host error includes only its hostname. If file transfer is unsupported in a host, the standalone UI can upload the original file directly.
 
@@ -85,19 +85,21 @@ Live ChatGPT account linking and its file-transfer path must be verified in the 
 
 ## MCP tools
 
-| Tool            | Purpose                                                                                                                                 |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `search_items`  | Search/filter the authenticated owner's library                                                                                         |
-| `draft_item`    | Propose editable metadata, file transcription and a visible source URL through OpenAI; requires read and write scopes but does not save |
-| `get_item`      | Read an item and immutable source; original file bytes are widget-only metadata                                                         |
-| `save_item`     | Create an unbookmarked drop; requires a retry-stable UUID (tool name retained for compatibility)                                        |
-| `update_item`   | Edit title, summary, tags, notes, category or isSaved bookmark using current revision                                                   |
-| `delete_item`   | Move a drop to Trash for seven days using current revision                                                                              |
-| `restore_item`  | Restore a drop before its Trash deadline, preserving its bookmark                                                                       |
-| `upload_source` | Preserve an explicitly supplied supported ChatGPT file                                                                                  |
-| `get_profile`   | Return the stable authenticated owner ID                                                                                                |
+| Tool | Purpose |
+| --- | --- |
+| `search_drops` | Search/filter the authenticated owner's library |
+| `draft_drop` | Propose editable metadata, transcription and a visible source URL through OpenAI; requires read and write scopes but does not save |
+| `get_drop` | Read a drop and immutable source; original file bytes are widget-only metadata |
+| `save_drop` | Create an unbookmarked drop; requires a retry-stable UUID |
+| `update_drop` | Edit title, summary, tags, notes, category or bookmark using the current revision |
+| `wipe_drop` | Move a drop to Trash for seven days using the current revision |
+| `restore_drop` | Restore a drop before its Trash deadline, preserving its bookmark |
+| `upload_source` | Preserve an explicitly supplied supported ChatGPT file |
+| `get_profile` | Return the stable authenticated owner ID |
 
-The `save_item`, `update_item`, `restore_item`, and `draft_item` tools require both `library:read` and `library:write` because they return or process existing content. `upload_source` and `delete_item` require write scope; read tools require read scope.
+The `save_drop`, `update_drop`, `restore_drop`, and `draft_drop` tools require both `library:read` and `library:write` because they return or process existing content. `upload_source` and `wipe_drop` require write scope; read tools require read scope.
+
+The pre-launch tool rename uses the drop names above without exposing duplicate legacy tools. After deploying it, refresh tools in the existing ChatGPT plugin and start a fresh tool call. Widget resource `ui://drop-it/library-v4.html` uses the new names; older rendered widgets may need to be reopened. HTTP routes, stored data and Trash retention are unchanged.
 
 ## Development and checks
 

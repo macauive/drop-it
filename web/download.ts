@@ -1,7 +1,7 @@
 import type { App } from "@modelcontextprotocol/ext-apps";
 import { fileMime, fileTypes, maxFileBytes } from "../shared/files.js";
 
-// Only the already-authorized original returned by get_item is handed to the
+// Only the already-authorized original returned by get_drop is handed to the
 // host. Never ask the host to fetch a URL or accept a path from source content.
 export async function downloadOriginal(
   host: Pick<App, "getHostCapabilities" | "downloadFile"> &

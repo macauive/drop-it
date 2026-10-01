@@ -471,17 +471,33 @@ test("MCP SDK client can discover tools, authenticate, and enforce read-only sco
       .filter((tool) => tool.annotations?.openWorldHint === true)
       .map((tool) => tool.name)
       .sort(),
-    ["draft_item", "search_items", "upload_source"],
+    ["draft_drop", "search_drops", "upload_source"],
   );
   // ChatGPT rejects Unicode property escapes in published JSON Schema patterns.
   // Runtime category refinements still enforce Unicode character restrictions.
   for (const tool of tools.tools) {
     assert.doesNotMatch(JSON.stringify(tool.inputSchema), /\\\\[pP]\{/);
   }
-  assert.ok(tools.tools.some((tool) => tool.name === "save_item"));
-  assert.ok(tools.tools.some((tool) => tool.name === "restore_item"));
+  assert.deepEqual(
+    tools.tools.map((tool) => tool.name).sort(),
+    [
+      "draft_drop",
+      "get_drop",
+      "get_profile",
+      "restore_drop",
+      "save_drop",
+      "search_drops",
+      "update_drop",
+      "upload_source",
+      "wipe_drop",
+    ],
+  );
+  const wipe = tools.tools.find((tool) => tool.name === "wipe_drop")!;
+  assert.equal(wipe.title, "Wipe drop");
+  assert.equal(wipe.annotations?.destructiveHint, true);
+  assert.equal(wipe.annotations?.readOnlyHint, false);
   const denied = await anonymous.callTool({
-    name: "search_items",
+    name: "search_drops",
     arguments: {},
   });
   assert.equal(denied.isError, true);
@@ -503,10 +519,10 @@ test("MCP SDK client can discover tools, authenticate, and enforce read-only sco
       },
     }),
   );
-  const search = await client.callTool({ name: "search_items", arguments: {} });
+  const search = await client.callTool({ name: "search_drops", arguments: {} });
   assert.notEqual(search.isError, true);
   const write = await client.callTool({
-    name: "save_item",
+    name: "save_drop",
     arguments: {
       requestId: randomUUID(),
       title: "Must not save",
@@ -515,17 +531,17 @@ test("MCP SDK client can discover tools, authenticate, and enforce read-only sco
   });
   assert.equal(write.isError, true);
   const restoreDenied = await client.callTool({
-    name: "restore_item",
+    name: "restore_drop",
     arguments: { id: randomUUID(), revision: 1 },
   });
   assert.equal(restoreDenied.isError, true);
   const draftDenied = await client.callTool({
-    name: "draft_item",
+    name: "draft_drop",
     arguments: { source: { originalText: "Must not call AI" } },
   });
   assert.equal(draftDenied.isError, true);
   const resource = await client.readResource({
-    uri: "ui://drop-it/library-v3.html",
+    uri: "ui://drop-it/library-v4.html",
   });
   assert.equal(resource.contents[0].mimeType, "text/html;profile=mcp-app");
   assert.deepEqual(resource.contents[0]._meta?.ui, {
