@@ -3,8 +3,10 @@ import { z } from "zod";
 export const categorySchema = z
   .string()
   .max(120)
-  .regex(
-    /^[\p{L}\p{M}\p{N} &+/'().,-]+$/u,
+  // Keep Unicode checks at runtime: JSON Schema cannot carry the JS `u` flag,
+  // and some MCP clients reject Unicode property escapes in schema patterns.
+  .refine(
+    (value) => /^[\p{L}\p{M}\p{N} &+/'().,-]+$/u.test(value),
     "Use a short pool name without special control characters.",
   )
   .transform((value) => value.normalize("NFKC").trim().replace(/ +/g, " "))
@@ -13,7 +15,7 @@ export const categorySchema = z
       .string()
       .min(1)
       .max(60)
-      .regex(/[\p{L}\p{N}]/u),
+      .refine((value) => /[\p{L}\p{N}]/u.test(value)),
   );
 export const views = ["All drops", "Saved", "Trash"] as const;
 export const settingsSchema = z
