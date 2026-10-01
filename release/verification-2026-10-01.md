@@ -1,8 +1,8 @@
 # Release verification — October 1, 2026
 
 The remaining core-flow tests now pass, including screenshot preservation.
-The release configuration targets `main`; verify the Render service and Blueprint
-sources and a post-deployment read before declaring the transition complete.
+The tested release was fast-forwarded to `main`. Both the Render Blueprint and
+web service now use `main`, and post-deployment health and ChatGPT reads passed.
 
 ## Passed
 
@@ -27,6 +27,12 @@ sources and a post-deployment read before declaring the transition complete.
   and retrieved with `get_item`. The widget displayed the original image and
   preserved transcription. The displayed original contained 41,907 bytes;
   its SHA-256 matched the uploaded local fixture exactly.
+- Render deployed commit `4299c7c` from `main` successfully. The Blueprint sync
+  changed only the web service branch; no database or pricing change was applied.
+  The public `/ready` endpoint returned HTTP 200 with `{"ok":true}`.
+- A fresh `get_item` call in a separate ChatGPT conversation after that deployment
+  displayed the original screenshot and preserved transcription, with its
+  expected title, Projects pool, revision 1, and unbookmarked state.
 
 ## Repairs made during verification
 
@@ -65,7 +71,6 @@ not modify pre-existing user drops.
 
 ## Next release gate
 
-Merge to `main`, switch both Render source branches, and verify health and
-ChatGPT retrieval after deployment. Broader public-launch checks
+The branch transition is complete. Broader public-launch checks
 (review account, submission walkthrough, enforced CSP, and backup restore)
 remain separate from the branch transition.
