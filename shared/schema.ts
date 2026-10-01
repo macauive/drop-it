@@ -167,18 +167,22 @@ export const fileParamSchema = z
   .object({
     download_url: z.string().url().max(4096),
     file_id: z.string().min(1).max(300),
-    filename: z.string().max(255),
-    mime_type: z.enum([
-      "image/png",
-      "image/jpeg",
-      "image/webp",
-      "application/pdf",
-      "text/plain",
-      "text/markdown",
-      "text/csv",
-      "application/json",
-      "application/octet-stream",
-    ]),
+    file_name: z.string().min(1).max(255).optional(),
+    // Compatibility for already-open widgets using the previous descriptor.
+    filename: z.string().min(1).max(255).optional(),
+    mime_type: z
+      .enum([
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "application/pdf",
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "application/json",
+        "application/octet-stream",
+      ])
+      .optional(),
   })
   .strict();
 export type SaveInput = z.input<typeof saveSchema>;

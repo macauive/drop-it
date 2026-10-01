@@ -193,7 +193,7 @@ export const client = {
         file: {
           download_url: downloadUrl,
           file_id: ref.fileId,
-          filename: file.name,
+          file_name: file.name,
           mime_type: fileMime(file.name) ?? "application/octet-stream",
         },
       });

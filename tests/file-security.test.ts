@@ -8,6 +8,8 @@ import { AppError } from "../server/errors.js";
 import { OpenAIProvider } from "../server/ai.js";
 import type { Library } from "../server/library.js";
 import { maxFileBytes } from "../shared/files.js";
+import { fileParamSchema } from "../shared/schema.js";
+import { z } from "zod";
 
 const file = {
   download_url: "https://files.oaiusercontent.com/synthetic-file",
@@ -21,6 +23,49 @@ const errorCode = (code: string) => (error: unknown) =>
 const library = (upload: Library["upload"]) => ({ upload }) as Library;
 const unusedLibrary = library(async () => {
   assert.fail("Rejected downloads must not reach storage.");
+});
+
+test("ChatGPT file descriptors declare optional metadata and only require the binding fields", () => {
+  const schema = z.toJSONSchema(fileParamSchema);
+  assert.deepEqual(schema.required, ["download_url", "file_id"]);
+  for (const property of ["download_url", "file_id", "mime_type", "file_name"])
+    assert.ok(schema.properties?.[property]);
+  assert.throws(() => fileParamSchema.parse({ ...file, unexpected: true }));
+});
+
+test("ChatGPT imports preserve originals with full, partial, or absent metadata", async (t) => {
+  const bytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "white" } }).png().toBuffer();
+  t.mock.method(globalThis, "fetch", async () => new Response(bytes, { headers: { "content-type": "application/octet-stream" } }));
+  for (const metadata of [{ file_name: "input.png", mime_type: "image/png" }, { file_name: "input.png" }, { mime_type: "image/png" }, {}, { mime_type: "application/octet-stream" }]) {
+    await importChatGPTFile(library(async (receivedOwner, original, mime, name) => {
+      assert.equal(receivedOwner, owner);
+      assert.deepEqual(original, bytes);
+      const validated = await validateUpload(original, mime, name);
+      assert.equal(validated.mime, "image/png");
+      assert.equal(validated.filename, "file_name" in metadata ? "input.png" : "source.png");
+      return { attachmentId: randomUUID(), originalText: validated.originalText };
+    }), owner, { download_url: file.download_url, file_id: file.file_id, ...metadata });
+  }
+});
+
+test("missing file metadata does not bypass forged content or filename checks", async (t) => {
+  const validatingLibrary = library(async (_owner, bytes, mime, name) => {
+    await validateUpload(bytes, mime, name);
+    assert.fail("Invalid files must not be accepted.");
+  });
+  t.mock.method(globalThis, "fetch", async () => new Response("not a PNG", { headers: { "content-type": "image/png" } }));
+  await assert.rejects(importChatGPTFile(validatingLibrary, owner, { download_url: file.download_url, file_id: file.file_id }), errorCode("INVALID_IMAGE"));
+  await assert.rejects(importChatGPTFile(validatingLibrary, owner, { download_url: file.download_url, file_id: file.file_id, file_name: "../input.png" }), errorCode("INVALID_FILE"));
+});
+
+test("missing filename uses supported response MIME while retaining text validation", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response("Synthetic text", { headers: { "content-type": "text/plain; charset=utf-8" } }));
+  await importChatGPTFile(library(async (_owner, bytes, mime, name) => {
+    const validated = await validateUpload(bytes, mime, name);
+    assert.equal(validated.filename, "source.txt");
+    assert.equal(validated.originalText, "Synthetic text");
+    return { attachmentId: randomUUID(), originalText: validated.originalText };
+  }), owner, { download_url: file.download_url, file_id: file.file_id });
 });
 
 test("file-import SSRF defenses reject host, scheme, credential and port bypasses before fetching", async (t) => {
