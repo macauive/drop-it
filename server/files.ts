@@ -22,6 +22,8 @@ export async function importChatGPTFile(
       400,
       "FILE_HOST",
       "Unsupported file host. Upload the file through Drop It instead.",
+      // Host-only diagnostics omit signed paths, query strings and credentials.
+      { downloadHost: url.hostname },
     );
   }
   const controller = new AbortController();
