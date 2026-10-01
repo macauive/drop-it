@@ -72,9 +72,9 @@ not modify pre-existing user drops.
 ## Next release gate
 
 The branch transition is complete. Remaining public-launch checks are the
-dedicated reviewer account and its review scenarios, walkthrough recording,
-normal-browser download click, physical mobile verification, and the portal's
-MCP connection/review information. No public submission or publication occurred.
+review scenarios in ChatGPT using the dedicated reviewer account, walkthrough
+recording, normal-browser download click, and physical mobile verification.
+No public submission or publication occurred.
 
 ## CSP, downloads, backup restoration, and submission draft
 
@@ -104,16 +104,51 @@ MCP connection/review information. No public submission or publication occurred.
 - Created and uploaded `dist/drop-it-plugin-draft.zip` using the public metadata
   and the three-file allowlist. Portal metadata checks report **No Issues**, and
   domain verification passed. The draft is neither submitted nor published.
-- Prepared the interactive Render account command for username `dropit-reviewer`
-  at the hidden password prompt. Account creation awaits direct user entry.
-  The owner's recovery-code form was also handed off for direct user entry.
-  Neither password nor recovery code belongs in chat, source, or the package.
+- The user completed the dedicated reviewer account and confirmed that the
+  owner's recovery code was saved. Reviewer sign-in succeeded with an initially
+  empty library, separate from the owner's existing drops.
 
 ### Reviewer handoff
 
-After the reviewer account is created, use only its synthetic sample library
-for the five positive and three negative cases in `release/review-cases.json`.
+Use only the reviewer account's synthetic sample library for the five positive
+and three negative cases in `release/review-cases.json`.
 Record sign-in, text save/search, screenshot transcription and original retrieval,
 edits, and Trash/restore. Verify desktop and mobile behavior, supply the recording
 URL, build the full package, finish the portal's MCP connection and review fields,
 and resolve any scan findings before requesting final submission approval.
+
+## Dedicated reviewer setup and live checks
+
+- Seeded two synthetic samples through the standalone UI: a bookmarked desk
+  cable organizer idea and a rainwater checklist screenshot. No private owner
+  content was copied into the reviewer library.
+- Standalone sign-in, text creation, search, note editing, bookmarking,
+  Trash/restore, image upload, AI draft review, and original-image display passed.
+  The text sample returned from Trash with its note and bookmark preserved.
+- Downloaded the reviewer's original screenshot through the browser download
+  helper: 41,907 bytes with SHA-256 equal to the uploaded synthetic fixture.
+- A direct link to an owner-account test drop showed only "This item is no
+  longer available" when signed in as the reviewer. No owner content appeared.
+- With explicit user approval, connected the reviewer account to OpenAI's
+  submission setup. The portal reports Authorized, Configured, Domain verified,
+  and discovered all nine tools. This does not replace the owner's existing
+  developer-plugin connection in ChatGPT.
+- With separate explicit approval, saved the dedicated login and sign-in
+  instructions in OpenAI's reviewer-credentials fields. The portal confirmed
+  "Progress saved." No password was added to source, docs, or the ZIP. If the
+  password changes, the portal credentials and affected OAuth connection must
+  be updated before review.
+- The scan identified external-system annotations on AI drafting and file
+  import; search also initially needed review. Corrected `openWorldHint` for
+  `draft_item`, `search_items`, and `upload_source`. Private-only tools remain
+  bounded; file-host restrictions, scopes, and owner checks are unchanged.
+  Lint, typecheck, build, and all 145 tests passed after the final correction.
+- Render deployed `d393272` from `main` and `/ready` returned `{"ok":true}`.
+  The final portal rescan reports **No issues found in the latest MCP scan**.
+  This is successful automated scanning, not approval for publication.
+- Five positive and three negative review scenarios are present in the draft.
+  The supporting-content page explicitly requires a walkthrough recording URL
+  in a newly uploaded ZIP. The user instructed us to leave the app unsubmitted.
+
+These standalone checks and successful MCP discovery do not establish that all
+eight model-driven review scenarios have passed using the reviewer account.
