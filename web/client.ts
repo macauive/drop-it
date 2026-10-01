@@ -21,6 +21,38 @@ declare global {
   }
 }
 export const embedded = window.parent !== window;
+const publicAuthPaths = new Set(["/api/login", "/api/setup", "/api/recover"]);
+let browserAuthVersion = 0;
+
+// Shared by JSON requests, uploads, and exports. A wrong credential remains an
+// inline form error; a missing browser session clears the authenticated UI.
+export async function browserRequest(path: string, options: RequestInit = {}) {
+  const version = browserAuthVersion;
+  const response = await fetch(path, {
+    ...options,
+    credentials: "same-origin",
+  });
+  if (embedded) return response;
+  if (publicAuthPaths.has(path)) {
+    if (response.ok) browserAuthVersion++;
+    return response;
+  }
+  if (response.status === 401 && version === browserAuthVersion) {
+    const result = await response
+      .clone()
+      .json()
+      .catch(() => null);
+    if (
+      version === browserAuthVersion &&
+      result?.code !== "LOGIN_FAILED" &&
+      result?.code !== "RECOVERY_FAILED"
+    ) {
+      browserAuthVersion++;
+      window.dispatchEvent(new Event("dropit:unauthenticated"));
+    }
+  }
+  return response;
+}
 export class ClientError extends Error {
   constructor(
     message: string,
@@ -100,9 +132,8 @@ export async function api<T>(
   method = "GET",
   body?: unknown,
 ): Promise<T> {
-  const response = await fetch(path, {
+  const response = await browserRequest(path, {
     method,
-    credentials: "same-origin",
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -162,9 +193,8 @@ export const client = {
         },
       });
     }
-    const response = await fetch("/api/attachments", {
+    const response = await browserRequest("/api/attachments", {
       method: "POST",
-      credentials: "same-origin",
       headers: {
         "Content-Type": "application/octet-stream",
         "X-File-Name": encodeURIComponent(file.name),

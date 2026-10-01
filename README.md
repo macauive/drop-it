@@ -11,7 +11,7 @@ npm ci
 npm run dev
 ```
 
-Open http://localhost:4317 and create your owner password (at least 12 characters). No AI API key, cloud database, or Docker is required. The password is hashed with Node's scrypt using explicit N=32768, r=8, p=3 parameters; existing legacy hashes upgrade after a successful login. Sessions use HTTP-only cookies. Owner setup is allowed only from loopback while PUBLIC_URL is local. There is no public signup.
+Open http://localhost:4317 and create your owner password (15–128 characters). No AI API key, cloud database, or Docker is required. The password is hashed with Node's scrypt using explicit N=32768, r=8, p=3 parameters; existing legacy hashes upgrade after a successful login. Sessions use HTTP-only cookies. Owner setup is allowed only from loopback while PUBLIC_URL is local. There is no public signup.
 
 `npm run dev` builds the UI once and watches server files. After UI edits, run `npm run build:web` and restart the server to load the new bundle. For a normal run after building, use `npm start`.
 
@@ -19,7 +19,7 @@ Configuration is read from `private/.env` when present; a root `.env` is not loa
 
 ## Implemented
 
-- Local owner setup, password login, expiring browser sessions, logout.
+- Local owner setup, password login, password changes, one-time recovery codes, expiring browser sessions, individual session revocation and sign out everywhere.
 - OAuth authorization-code flow with PKCE, exact redirect allowlists, rotating refresh tokens with family revocation on replay, scope checks and revocation using the official MCP SDK. Disconnecting also invalidates previously approved authorization codes.
 - Text/link capture and private PNG/JPEG/WebP, PDF, TXT, Markdown, CSV and JSON uploads (10 MB per file; 250 MB per-owner attachment quota). Images are limited to 25 megapixels, PDFs to 30 unencrypted pages, and UTF-8 text files to 50,000 characters. Unsupported formats, invalid content and filename traversal are rejected.
 - Original sources stored independently of editable items; multiple items may reference one source.
@@ -37,6 +37,16 @@ Configuration is read from `private/.env` when present; a root `.env` is not loa
 - Standalone Settings panel with JSON export, owner-scoped connected-app count and confirmed disconnect-all, AI configuration/privacy details and the fixed seven-day Trash policy. Configuration status does not verify OpenAI credentials or credit; API keys are never sent to the browser. Embedded ChatGPT widgets do not expose browser-session settings or library export.
 
 The standalone UI supports AI-assisted drafting and manual entry. Inside ChatGPT, the host model can supply metadata directly or request `draft_item`. Saving or drafting a URL does not fetch its page. Source content is untrusted data, never instructions.
+
+### Account security and recovery
+
+Open Settings to change your password, generate a recovery code, review active browser sessions, or sign out everywhere. Each change requires your current password. New passwords must have 15–128 characters; existing shorter passwords remain usable for login and reauthentication. This follows [OWASP's guidance for password-only authentication and sensitive account changes](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html).
+
+Save your recovery code in a password manager or another secure offline location. The app shows it once and stores only its hash. Generating another code immediately invalidates the previous one. If you forget your password, select **Forgot password?** on the login screen and enter your code with a new password. Recovery does not require email. The code works once; there is no recovery without either a valid code or your password.
+
+Changing or recovering your password revokes every browser session, connected-app token and approved OAuth code, and invalidates the recovery code. Sign in again and generate a new recovery code afterward. **Sign out everywhere** also revokes browser sessions and app connections but preserves your recovery code. These actions preserve saved library data. An individual session can be ended without affecting other sessions or connected apps.
+
+The session list shows a coarse browser/device label and creation, last-active and expiration times. Labels are informational and do not establish device identity. Raw user agents and IP addresses are not stored. Browser sessions expire after seven days. The list shows the current browser and up to 49 other active sessions; each login retains at most 50 sessions. Older installations keep existing sessions during migration, and sign out everywhere also revokes any older sessions beyond the displayed limit. Account-security controls are available only in the standalone browser app, not through MCP tools or the ChatGPT widget. Sensitive requests recheck the current session under the same database lock used for credential changes. Sign-in/recovery attempts and authenticated security changes have separate rate limits; the in-memory limiters apply per server process.
 
 ### AI configuration and privacy
 
@@ -98,7 +108,7 @@ npm run check
 npm run format
 ```
 
-Checks include ESLint, TypeScript, the production widget build, real HTTP API tests, OAuth token exchange, an official SDK MCP client, durable database reopening, input/file validation, cross-owner isolation, shared-source cleanup, retries and exports. Tests use temporary databases and generated credentials; they never read your library.
+Checks include ESLint, TypeScript, the production widget build, real HTTP API tests, password changes, one-time recovery, browser-session revocation, OAuth token exchange, an official SDK MCP client, durable database reopening, input/file validation, cross-owner isolation, shared-source cleanup, retries and exports. Tests use temporary databases and generated credentials; they never read your library.
 
 Use the in-app browser for visual verification. Check desktop and mobile layouts, setup/login, screenshot upload, source display, editing, search, export, deletion and keyboard focus.
 
@@ -114,9 +124,9 @@ When local PostgreSQL binaries are installed, `node --import tsx tests/postgres-
 
 - Private, single-owner onboarding; no public launch, billing, shared collections or team invitations.
 - No browser extension, Apple Notes import, reminders or automatic webpage scraping.
-- No automated password recovery yet. Keep your password in your password manager.
+- No MFA, passkeys or email-based recovery. Keep your password and offline recovery code secure.
 - Backups may retain deleted content until you rotate them; export files contain your original private content.
-- Local OAuth implementation is intended for private use. A broader release needs hosted identity/provider review, deployment hardening and an account-recovery workflow.
+- Local OAuth implementation is intended for private use. A broader release needs hosted identity/provider review and deployment hardening.
 
 ## Design references
 

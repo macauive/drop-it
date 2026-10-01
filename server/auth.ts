@@ -25,6 +25,12 @@ import type { Database, Queryable } from "./db.js";
 import type { Config } from "./config.js";
 import { digest } from "./library.js";
 import { AppError } from "./errors.js";
+import {
+  currentPasswordSchema,
+  newPasswordSchema,
+  recoveryCodeSchema,
+  idSchema,
+} from "../shared/schema.js";
 
 // OWASP's 32 MiB scrypt profile; only these explicit profiles are accepted.
 const passwordProfile = { N: 32768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 };
@@ -71,7 +77,46 @@ async function derivePassword(password: string, salt: string, legacy = false) {
   }
 }
 const secret = () => randomBytes(32).toString("base64url");
+const sessionTokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const scopesAllowed = ["library:read", "library:write"];
+type UserRow = {
+  id: string;
+  password_hash: string;
+  auth_version: number;
+  recovery_hash: string | null;
+  recovery_created_at: Date | null;
+};
+function sessionLabel(userAgent?: string) {
+  if (!userAgent) return "Browser session";
+  const ua = userAgent.slice(0, 512);
+  const browser = /Edg(?:e|A|iOS)?\//.test(ua)
+    ? "Edge"
+    : /OPR\//.test(ua)
+      ? "Opera"
+      : /(?:Firefox|FxiOS)\//.test(ua)
+        ? "Firefox"
+        : /(?:Chrome|CriOS)\//.test(ua)
+          ? "Chrome"
+          : /Safari\//.test(ua)
+            ? "Safari"
+            : "Browser";
+  const platform = /(?:iPhone|iPad|iPod)/.test(ua)
+    ? "iOS"
+    : /Android/.test(ua)
+      ? "Android"
+      : /Windows NT/.test(ua)
+        ? "Windows"
+        : /(?:Macintosh|Mac OS X)/.test(ua)
+          ? "macOS"
+          : /Linux/.test(ua)
+            ? "Linux"
+            : undefined;
+  return platform ? `${browser} on ${platform}` : `${browser} session`;
+}
+const loginFailed = () =>
+  new AppError(401, "LOGIN_FAILED", "The password was not accepted.");
+const unauthenticated = () =>
+  new AppError(401, "UNAUTHENTICATED", "Sign in to manage account security.");
 type StoredParams = Omit<AuthorizationParams, "resource"> & {
   resource: string;
 };
@@ -159,58 +204,287 @@ export class Auth implements OAuthServerProvider {
         .rows.length > 0
     );
   }
-  async setup(password: string) {
+  async setup(password: string, userAgent?: string) {
+    newPasswordSchema.parse(password);
     const hash = await hashPassword(password);
     const id = randomUUID();
-    const { rows } = await this.db.query(
-      "INSERT INTO users(id,password_hash) VALUES($1,$2) ON CONFLICT(singleton) DO NOTHING RETURNING id",
-      [id, hash],
-    );
-    if (!rows.length)
-      throw new AppError(
-        409,
-        "ALREADY_CONFIGURED",
-        "An owner account is already configured.",
+    return this.db.transaction(async (tx) => {
+      const { rows } = await tx.query(
+        "INSERT INTO users(id,password_hash) VALUES($1,$2) ON CONFLICT(singleton) DO NOTHING RETURNING id",
+        [id, hash],
       );
-    return this.session(id);
+      if (!rows.length)
+        throw new AppError(
+          409,
+          "ALREADY_CONFIGURED",
+          "An owner account is already configured.",
+        );
+      return this.issueSession(tx, id, userAgent);
+    });
   }
-  async login(password: string) {
-    const { rows } = await this.db.query<{ id: string; password_hash: string }>(
-      "SELECT id,password_hash FROM users WHERE singleton=true LIMIT 1",
+  async login(password: string, userAgent?: string) {
+    currentPasswordSchema.parse(password);
+    const { rows } = await this.db.query<UserRow>(
+      "SELECT id,password_hash,auth_version FROM users WHERE singleton=true LIMIT 1",
     );
     const user = rows[0];
     const verification =
       user && (await verifyPassword(password, user.password_hash));
-    if (!verification?.valid)
-      throw new AppError(401, "LOGIN_FAILED", "The password was not accepted.");
-    if (verification.needsUpgrade) {
-      const upgraded = await hashPassword(password);
-      // Concurrent successful logins must not overwrite a newer credential.
-      await this.db.query(
-        "UPDATE users SET password_hash=$1 WHERE id=$2 AND password_hash=$3",
-        [upgraded, user.id, user.password_hash],
-      );
-    }
-    return this.session(user.id);
+    if (!verification?.valid) throw loginFailed();
+    const upgraded = verification.needsUpgrade
+      ? await hashPassword(password)
+      : undefined;
+    return this.db.transaction(async (tx) => {
+      const current = await this.lockOwner(tx, user.id);
+      if (
+        !current ||
+        current.password_hash !== user.password_hash ||
+        current.auth_version !== user.auth_version
+      )
+        throw loginFailed();
+      if (upgraded)
+        await tx.query("UPDATE users SET password_hash=$1 WHERE id=$2", [
+          upgraded,
+          user.id,
+        ]);
+      return this.issueSession(tx, user.id, userAgent);
+    });
   }
-  async session(owner: string) {
+  async session(owner: string, userAgent?: string) {
+    idSchema.parse(owner);
+    return this.db.transaction(async (tx) => {
+      if (!(await this.lockOwner(tx, owner))) throw unauthenticated();
+      return this.issueSession(tx, owner, userAgent);
+    });
+  }
+  private async issueSession(tx: Queryable, owner: string, userAgent?: string) {
     const token = secret();
-    await this.db.query(
-      "INSERT INTO sessions(hash,owner,expires_at) VALUES($1,$2,now()+interval '7 days')",
-      [digest(token), owner],
+    await tx.query(
+      "DELETE FROM sessions WHERE owner=$1 AND expires_at<=clock_timestamp()",
+      [owner],
+    );
+    // Retain the 49 most recently used sessions before issuing the next one.
+    await tx.query(
+      `DELETE FROM sessions WHERE owner=$1 AND id IN (
+      SELECT id FROM sessions WHERE owner=$1 ORDER BY last_seen_at DESC,created_at DESC,id DESC OFFSET 49
+    )`,
+      [owner],
+    );
+    await tx.query(
+      "INSERT INTO sessions(hash,owner,label,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval '7 days')",
+      [digest(token), owner, sessionLabel(userAgent)],
     );
     return token;
   }
   async sessionOwner(token: unknown) {
-    if (typeof token !== "string" || token.length > 100) return undefined;
+    if (typeof token !== "string" || !sessionTokenPattern.test(token))
+      return undefined;
     const { rows } = await this.db.query<{ owner: string }>(
       "SELECT owner FROM sessions WHERE hash=$1 AND expires_at>now()",
       [digest(token)],
     );
+    if (rows[0])
+      await this.db.query(
+        "UPDATE sessions SET last_seen_at=clock_timestamp() WHERE hash=$1 AND expires_at>clock_timestamp() AND last_seen_at<clock_timestamp()-interval '5 minutes'",
+        [digest(token)],
+      );
     return rows[0]?.owner;
   }
   async logout(token: string) {
-    await this.db.query("DELETE FROM sessions WHERE hash=$1", [digest(token)]);
+    if (typeof token !== "string" || !sessionTokenPattern.test(token)) return;
+    const { rows } = await this.db.query<{ owner: string }>(
+      "SELECT owner FROM sessions WHERE hash=$1",
+      [digest(token)],
+    );
+    if (!rows[0]) return;
+    await this.db.transaction(async (tx) => {
+      await this.lockOwner(tx, rows[0].owner);
+      await tx.query("DELETE FROM sessions WHERE owner=$1 AND hash=$2", [
+        rows[0].owner,
+        digest(token),
+      ]);
+    });
+  }
+  private async activeSession(tx: Queryable, owner: string, token: string) {
+    if (typeof token !== "string" || !sessionTokenPattern.test(token))
+      throw unauthenticated();
+    const { rows } = await tx.query<{ id: string }>(
+      "SELECT id FROM sessions WHERE owner=$1 AND hash=$2 AND expires_at>clock_timestamp()",
+      [owner, digest(token)],
+    );
+    if (!rows[0]) throw unauthenticated();
+    return rows[0];
+  }
+  private async reauthenticate(owner: string, token: string, password: string) {
+    idSchema.parse(owner);
+    currentPasswordSchema.parse(password);
+    await this.activeSession(this.db, owner, token);
+    const { rows } = await this.db.query<UserRow>(
+      "SELECT id,password_hash,auth_version FROM users WHERE id=$1",
+      [owner],
+    );
+    const user = rows[0];
+    if (!user || !(await verifyPassword(password, user.password_hash)).valid)
+      throw loginFailed();
+    return user;
+  }
+  private async recheck(tx: Queryable, snapshot: UserRow, token: string) {
+    const current = await this.lockOwner(tx, snapshot.id);
+    if (
+      !current ||
+      current.password_hash !== snapshot.password_hash ||
+      current.auth_version !== snapshot.auth_version
+    )
+      throw unauthenticated();
+    await this.activeSession(tx, snapshot.id, token);
+    return current;
+  }
+  private async invalidateCredentials(
+    tx: Queryable,
+    owner: string,
+    clearRecovery: boolean,
+  ) {
+    await tx.query("DELETE FROM sessions WHERE owner=$1", [owner]);
+    await tx.query("DELETE FROM oauth_codes WHERE owner=$1", [owner]);
+    await tx.query("DELETE FROM oauth_tokens WHERE owner=$1", [owner]);
+    await tx.query(
+      clearRecovery
+        ? "UPDATE users SET auth_version=auth_version+1,recovery_hash=NULL,recovery_created_at=NULL WHERE id=$1"
+        : "UPDATE users SET auth_version=auth_version+1 WHERE id=$1",
+      [owner],
+    );
+  }
+  async security(owner: string, token: string) {
+    idSchema.parse(owner);
+    return this.db.transaction(async (tx) => {
+      const user = await this.lockOwner(tx, owner);
+      if (!user) throw unauthenticated();
+      const current = await this.activeSession(tx, owner, token);
+      const { rows } = await tx.query<{
+        id: string;
+        label: string;
+        created_at: Date;
+        last_seen_at: Date;
+        expires_at: Date;
+      }>(
+        "SELECT id,label,created_at,last_seen_at,expires_at FROM sessions WHERE owner=$1 AND expires_at>clock_timestamp() ORDER BY (id=$2) DESC,last_seen_at DESC,created_at DESC,id DESC LIMIT 50",
+        [owner, current.id],
+      );
+      return {
+        recoveryEnabled: Boolean(user.recovery_hash),
+        recoveryCreatedAt: user.recovery_created_at
+          ? new Date(user.recovery_created_at).toISOString()
+          : null,
+        sessions: rows.map((row) => ({
+          id: row.id,
+          label: row.label,
+          createdAt: new Date(row.created_at).toISOString(),
+          lastSeenAt: new Date(row.last_seen_at).toISOString(),
+          expiresAt: new Date(row.expires_at).toISOString(),
+          current: row.id === current.id,
+        })),
+      };
+    });
+  }
+  async changePassword(
+    owner: string,
+    token: string,
+    currentPassword: string,
+    newPassword: string,
+  ) {
+    newPasswordSchema.parse(newPassword);
+    const snapshot = await this.reauthenticate(owner, token, currentPassword);
+    const hash = await hashPassword(newPassword);
+    await this.db.transaction(async (tx) => {
+      await this.recheck(tx, snapshot, token);
+      await tx.query("UPDATE users SET password_hash=$1 WHERE id=$2", [
+        hash,
+        owner,
+      ]);
+      await this.invalidateCredentials(tx, owner, true);
+    });
+  }
+  async createRecoveryCode(
+    owner: string,
+    token: string,
+    currentPassword: string,
+  ) {
+    const snapshot = await this.reauthenticate(owner, token, currentPassword);
+    const recoveryCode = secret();
+    await this.db.transaction(async (tx) => {
+      await this.recheck(tx, snapshot, token);
+      await tx.query(
+        "UPDATE users SET recovery_hash=$1,recovery_created_at=clock_timestamp() WHERE id=$2",
+        [digest(recoveryCode), owner],
+      );
+    });
+    return { recoveryCode };
+  }
+  async recover(recoveryCode: string, newPassword: string) {
+    recoveryCode = recoveryCodeSchema.parse(recoveryCode);
+    newPasswordSchema.parse(newPassword);
+    const codeHash = digest(recoveryCode);
+    const { rows } = await this.db.query<UserRow>(
+      "SELECT id,recovery_hash,auth_version FROM users WHERE singleton=true AND recovery_hash=$1",
+      [codeHash],
+    );
+    const snapshot = rows[0];
+    const rejected = () =>
+      new AppError(
+        401,
+        "RECOVERY_FAILED",
+        "The recovery code was not accepted.",
+      );
+    if (!snapshot) throw rejected();
+    const hash = await hashPassword(newPassword);
+    await this.db.transaction(async (tx) => {
+      const current = await this.lockOwner(tx, snapshot.id);
+      if (
+        !current ||
+        current.recovery_hash !== codeHash ||
+        current.auth_version !== snapshot.auth_version
+      )
+        throw rejected();
+      await tx.query("UPDATE users SET password_hash=$1 WHERE id=$2", [
+        hash,
+        snapshot.id,
+      ]);
+      await this.invalidateCredentials(tx, snapshot.id, true);
+    });
+  }
+  async logoutEverywhere(
+    owner: string,
+    token: string,
+    currentPassword: string,
+  ) {
+    const snapshot = await this.reauthenticate(owner, token, currentPassword);
+    await this.db.transaction(async (tx) => {
+      await this.recheck(tx, snapshot, token);
+      await this.invalidateCredentials(tx, owner, false);
+    });
+  }
+  async revokeSession(
+    owner: string,
+    token: string,
+    currentPassword: string,
+    id: string,
+  ) {
+    idSchema.parse(id);
+    const snapshot = await this.reauthenticate(owner, token, currentPassword);
+    return this.db.transaction(async (tx) => {
+      await this.recheck(tx, snapshot, token);
+      const { rows } = await tx.query<{ current: boolean }>(
+        "DELETE FROM sessions WHERE owner=$1 AND id=$2 AND expires_at>clock_timestamp() RETURNING hash=$3 AS current",
+        [owner, id, digest(token)],
+      );
+      if (!rows[0])
+        throw new AppError(
+          404,
+          "NOT_FOUND",
+          "That browser session was not found.",
+        );
+      return { signedOut: rows[0].current };
+    });
   }
   async authorize(
     client: OAuthClientInformationFull,
@@ -256,9 +530,10 @@ export class Auth implements OAuthServerProvider {
       redirectUri: rows[0].params.redirectUri,
     };
   }
-  async consent(owner: string, id: string, approved: boolean) {
+  async consent(owner: string, id: string, approved: boolean, token?: string) {
     return this.db.transaction(async (tx) => {
       await this.lockOwner(tx, owner);
+      if (token !== undefined) await this.activeSession(tx, owner, token);
       const { rows } = await tx.query<{
         client_id: string;
         params: StoredParams;
@@ -372,7 +647,11 @@ export class Auth implements OAuthServerProvider {
   private async lockOwner(tx: Queryable, owner: string) {
     // Issuance and revocation share this lock so a concurrent exchange cannot
     // recreate credentials after the owner's disconnect has completed.
-    await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [owner]);
+    const { rows } = await tx.query<UserRow>(
+      "SELECT id,password_hash,auth_version,recovery_hash,recovery_created_at FROM users WHERE id=$1 FOR UPDATE",
+      [owner],
+    );
+    return rows[0];
   }
   async exchangeRefreshToken(
     client: OAuthClientInformationFull,
@@ -463,9 +742,10 @@ export class Auth implements OAuthServerProvider {
       );
     });
   }
-  async revokeAll(owner: string) {
+  async revokeAll(owner: string, token?: string) {
     await this.db.transaction(async (tx) => {
       await this.lockOwner(tx, owner);
+      if (token !== undefined) await this.activeSession(tx, owner, token);
       await tx.query("DELETE FROM oauth_codes WHERE owner=$1", [owner]);
       await tx.query("DELETE FROM oauth_tokens WHERE owner=$1", [owner]);
     });

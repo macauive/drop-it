@@ -928,6 +928,86 @@ p {
 .settings-confirm .actions {
   flex-wrap: wrap;
 }
+.security-fields {
+  display: grid;
+  gap: 14px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.security-group + .security-group,
+.security-action {
+  border-top: 1px solid var(--line);
+  margin-top: 22px;
+  padding-top: 22px;
+}
+.security-settings h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+.security-settings .actions {
+  flex-wrap: wrap;
+}
+.security-sessions {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+}
+.security-sessions li {
+  display: grid;
+  gap: 8px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  color: #66737f;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.security-sessions li:first-child {
+  padding-top: 0;
+}
+.security-sessions li > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.security-sessions button {
+  justify-self: start;
+  font-size: 11px;
+}
+.current-session {
+  color: #245f93;
+  background: #edf2fa;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.recovery-code-panel {
+  padding: 16px;
+  border: 1px solid #c5d7ee;
+  border-radius: 6px;
+  background: #f6f9fe;
+}
+.recovery-code-panel:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+.recovery-code {
+  display: block;
+  padding: 12px;
+  margin: 14px 0;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+  user-select: all;
+  font-size: 13px;
+  line-height: 1.7;
+}
 .source-link {
   display: flex;
   align-items: center;

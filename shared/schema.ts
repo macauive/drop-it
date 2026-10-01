@@ -25,6 +25,34 @@ export const settingsSchema = z
   .strict();
 export type LibrarySettings = z.infer<typeof settingsSchema>;
 export const idSchema = z.string().uuid();
+export const currentPasswordSchema = z.string().min(1).max(128);
+export const newPasswordSchema = z.string().min(15).max(128);
+export const recoveryCodeSchema = z
+  .string()
+  .max(100)
+  .trim()
+  .regex(/^[A-Za-z0-9_-]{43}$/);
+export const securityInfoSchema = z
+  .object({
+    recoveryEnabled: z.boolean(),
+    recoveryCreatedAt: z.string().datetime().nullable(),
+    sessions: z
+      .array(
+        z
+          .object({
+            id: idSchema,
+            label: z.string().min(1).max(80),
+            createdAt: z.string().datetime(),
+            lastSeenAt: z.string().datetime(),
+            expiresAt: z.string().datetime(),
+            current: z.boolean(),
+          })
+          .strict(),
+      )
+      .max(50),
+  })
+  .strict();
+export type SecurityInfo = z.infer<typeof securityInfoSchema>;
 export const urlSchema = z
   .string()
   .trim()

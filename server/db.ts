@@ -181,4 +181,35 @@ export async function migrate(db: Database) {
     );
     await tx.query("INSERT INTO schema_migrations(version) VALUES(6)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=7"))
+        .rows.length
+    )
+      return;
+    await tx.query(`ALTER TABLE users
+      ADD COLUMN auth_version integer NOT NULL DEFAULT 0 CHECK(auth_version >= 0),
+      ADD COLUMN recovery_hash text,
+      ADD COLUMN recovery_created_at timestamptz,
+      ADD CONSTRAINT users_recovery_state CHECK(
+        (recovery_hash IS NULL AND recovery_created_at IS NULL) OR
+        (recovery_hash IS NOT NULL AND recovery_hash ~ '^[a-f0-9]{64}$' AND recovery_created_at IS NOT NULL)
+      )`);
+    await tx.query(`ALTER TABLE sessions
+      ADD COLUMN id uuid NOT NULL DEFAULT gen_random_uuid(),
+      ADD COLUMN label text NOT NULL DEFAULT 'Existing browser session',
+      ADD COLUMN created_at timestamptz NOT NULL DEFAULT now(),
+      ADD COLUMN last_seen_at timestamptz NOT NULL DEFAULT now(),
+      ADD CONSTRAINT sessions_public_id_unique UNIQUE(id),
+      ADD CONSTRAINT sessions_label_length CHECK(char_length(label) BETWEEN 1 AND 80)`);
+    // Existing sessions have a seven-day lifetime; retain their tokens and
+    // derive an approximate creation time without inventing device history.
+    await tx.query(`UPDATE sessions SET
+      created_at=LEAST(now(),expires_at-interval '7 days'),
+      last_seen_at=LEAST(now(),expires_at-interval '7 days')`);
+    await tx.query(
+      "CREATE INDEX sessions_owner_seen ON sessions(owner,last_seen_at DESC)",
+    );
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(7)");
+  });
 }

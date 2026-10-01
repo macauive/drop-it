@@ -16,7 +16,15 @@ import { Auth } from "./auth.js";
 import { Library } from "./library.js";
 import { createMcpServer } from "./mcp.js";
 import { AppError } from "./errors.js";
-import { searchSchema, idSchema, settingsSchema } from "../shared/schema.js";
+import {
+  searchSchema,
+  idSchema,
+  settingsSchema,
+  currentPasswordSchema,
+  newPasswordSchema,
+  recoveryCodeSchema,
+  securityInfoSchema,
+} from "../shared/schema.js";
 import { OpenAIProvider, type AIProvider } from "./ai.js";
 
 export function createApp(
@@ -111,9 +119,19 @@ export function createApp(
     legacyHeaders: false,
     message: { error: "Too many sign-in attempts. Please try again later." },
   });
-  const passwordSchema = z
-    .object({ password: z.string().min(12).max(128) })
+  const passwordSchema = z.object({ password: currentPasswordSchema }).strict();
+  const setupSchema = z.object({ password: newPasswordSchema }).strict();
+  const reauthSchema = z
+    .object({ currentPassword: currentPasswordSchema })
     .strict();
+  const reauthLimiter = rateLimit({
+    windowMs: 15 * 60000,
+    limit: 10,
+    keyGenerator: (_req, res) => res.locals.owner,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: "Too many security attempts. Please try again later." },
+  });
   app.get("/api/session", async (req, res) => {
     const owner = await auth.sessionOwner(req.cookies[cookie]);
     res.json({
@@ -133,15 +151,36 @@ export function createApp(
         "LOCAL_ONLY",
         "Create the owner account locally before exposing Drop It.",
       );
-    const { password } = passwordSchema.parse(req.body);
+    const { password } = setupSchema.parse(req.body);
     res
-      .cookie(cookie, await auth.setup(password), cookieOptions)
+      .cookie(
+        cookie,
+        await auth.setup(password, req.get("User-Agent")),
+        cookieOptions,
+      )
       .json({ ok: true });
   });
   app.post("/api/login", loginLimiter, async (req, res) => {
     const { password } = passwordSchema.parse(req.body);
     res
-      .cookie(cookie, await auth.login(password), cookieOptions)
+      .cookie(
+        cookie,
+        await auth.login(password, req.get("User-Agent")),
+        cookieOptions,
+      )
+      .json({ ok: true });
+  });
+  app.post("/api/recover", loginLimiter, async (req, res) => {
+    const { recoveryCode, newPassword } = z
+      .object({
+        recoveryCode: recoveryCodeSchema,
+        newPassword: newPasswordSchema,
+      })
+      .strict()
+      .parse(req.body);
+    await auth.recover(recoveryCode, newPassword);
+    res
+      .clearCookie(cookie, { ...cookieOptions, maxAge: undefined })
       .json({ ok: true });
   });
   app.use("/api", async (req, res, next) => {
@@ -162,8 +201,66 @@ export function createApp(
       .json({ ok: true });
   });
   app.post("/api/revoke-connections", async (_req, res) => {
-    await auth.revokeAll(res.locals.owner);
+    await auth.revokeAll(res.locals.owner, _req.cookies[cookie]);
     res.json({ ok: true });
+  });
+  app.get("/api/security", async (req, res) => {
+    res.json(
+      securityInfoSchema.parse(
+        await auth.security(res.locals.owner, req.cookies[cookie]),
+      ),
+    );
+  });
+  app.post("/api/change-password", reauthLimiter, async (req, res) => {
+    const { currentPassword, newPassword } = z
+      .object({
+        currentPassword: currentPasswordSchema,
+        newPassword: newPasswordSchema,
+      })
+      .strict()
+      .parse(req.body);
+    await auth.changePassword(
+      res.locals.owner,
+      req.cookies[cookie],
+      currentPassword,
+      newPassword,
+    );
+    res
+      .clearCookie(cookie, { ...cookieOptions, maxAge: undefined })
+      .json({ ok: true });
+  });
+  app.post("/api/recovery-code", reauthLimiter, async (req, res) => {
+    const { currentPassword } = reauthSchema.parse(req.body);
+    res.json(
+      await auth.createRecoveryCode(
+        res.locals.owner,
+        req.cookies[cookie],
+        currentPassword,
+      ),
+    );
+  });
+  app.post("/api/logout-all", reauthLimiter, async (req, res) => {
+    const { currentPassword } = reauthSchema.parse(req.body);
+    await auth.logoutEverywhere(
+      res.locals.owner,
+      req.cookies[cookie],
+      currentPassword,
+    );
+    res
+      .clearCookie(cookie, { ...cookieOptions, maxAge: undefined })
+      .json({ ok: true });
+  });
+  app.delete("/api/sessions/:id", reauthLimiter, async (req, res) => {
+    const { currentPassword } = reauthSchema.parse(req.body);
+    const result = await auth.revokeSession(
+      res.locals.owner,
+      req.cookies[cookie],
+      currentPassword,
+      idSchema.parse(req.params.id),
+    );
+    if (result.signedOut)
+      res.clearCookie(cookie, { ...cookieOptions, maxAge: undefined });
+    res.json(result);
   });
   app.get("/api/settings", async (_req, res) => {
     const { rows } = await db.query<{ count: string }>(
@@ -193,6 +290,7 @@ export function createApp(
         res.locals.owner,
         z.string().min(20).max(100).parse(req.params.id),
         approved,
+        req.cookies[cookie],
       ),
     );
   });

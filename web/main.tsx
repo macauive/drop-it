@@ -41,7 +41,14 @@ import {
   settingsSchema,
   type LibrarySettings,
 } from "../shared/schema.js";
-import { api, client, ClientError, embedded } from "./client.js";
+import {
+  api,
+  browserRequest,
+  client,
+  ClientError,
+  embedded,
+} from "./client.js";
+import { RecoveryForm, SecuritySettings } from "./security.js";
 import {
   fileAccept,
   fileMime,
@@ -160,13 +167,38 @@ function App() {
       : null,
   );
   const [error, setError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
+  const sessionRequest = useRef(0);
   const refresh = useCallback(() => {
+    const request = ++sessionRequest.current;
     api<typeof session>("/api/session")
-      .then(setSession)
-      .catch((e) => setError(message(e)));
+      .then((value) => {
+        if (request === sessionRequest.current) setSession(value);
+      })
+      .catch((e) => {
+        if (request === sessionRequest.current) setError(message(e));
+      });
   }, []);
   useEffect(() => {
-    if (!embedded) refresh();
+    if (embedded) return;
+    const sessionEnded = () => {
+      // Ignore earlier session checks that may have completed before revocation.
+      sessionRequest.current++;
+      setError("");
+      setAuthNotice(
+        "Your browser session has ended. Sign in again to continue.",
+      );
+      setSession((value) => ({
+        authenticated: false,
+        needsSetup: false,
+        localSetup: value?.localSetup ?? false,
+      }));
+    };
+    window.addEventListener("dropit:unauthenticated", sessionEnded);
+    refresh();
+    return () => {
+      window.removeEventListener("dropit:unauthenticated", sessionEnded);
+    };
   }, [refresh]);
   if (error)
     return (
@@ -194,85 +226,167 @@ function App() {
       <Login
         setup={session.needsSetup}
         local={session.localSetup}
-        onSuccess={refresh}
+        notice={authNotice}
+        onSuccess={() => {
+          setAuthNotice("");
+          refresh();
+        }}
       />
     );
   const authorization = new URLSearchParams(location.search).get("authorize");
   if (authorization && !embedded) return <Consent id={authorization} />;
-  return <Library onLogout={refresh} />;
+  return (
+    <Library
+      onLogout={(notice = "") => {
+        setAuthNotice(notice);
+        setSession((value) =>
+          value ? { ...value, authenticated: false } : value,
+        );
+        refresh();
+      }}
+    />
+  );
 }
 function Login({
   setup,
   local,
+  notice,
   onSuccess,
 }: {
   setup: boolean;
   local: boolean;
+  notice: string;
   onSuccess: () => void;
 }) {
   const [password, setPassword] = useState(""),
+    [confirmation, setConfirmation] = useState(""),
+    [recovering, setRecovering] = useState(false),
+    [recoveryNotice, setRecoveryNotice] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const loginLock = useRef(false);
   return (
     <main className="auth-shell">
       <Brand />
       <div className="auth-form">
-        <span className="eyebrow">YOUR PRIVATE LIBRARY</span>
-        <h1>{setup ? "Make a little room." : "Welcome back."}</h1>
-        <p className="muted">
-          {setup
-            ? "A place for the things worth keeping."
-            : "Your saved ideas are right where you left them."}
-        </p>
-        {setup && !local ? (
-          <Alert text="Open Drop It locally to create the owner account." />
-        ) : (
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              setBusy(true);
-              setError("");
-              try {
-                await api(setup ? "/api/setup" : "/api/login", "POST", {
-                  password,
-                });
-                setPassword("");
-                onSuccess();
-              } catch (e) {
-                setError(message(e));
-              } finally {
-                setBusy(false);
-              }
+        {recovering && !setup ? (
+          <RecoveryForm
+            onCancel={() => setRecovering(false)}
+            onRecovered={() => {
+              setRecovering(false);
+              setPassword("");
+              setRecoveryNotice(
+                "Password reset. Sign in with your new password, then generate a new recovery code in Settings.",
+              );
             }}
-          >
-            <label>
-              Password
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete={setup ? "new-password" : "current-password"}
-                minLength={12}
-                maxLength={128}
-                required
-                autoFocus
-              />
-            </label>
-            {setup && (
-              <span className="field-note">At least 12 characters.</span>
+          />
+        ) : (
+          <>
+            <span className="eyebrow">YOUR PRIVATE LIBRARY</span>
+            <h1>{setup ? "Make a little room." : "Welcome back."}</h1>
+            <p className="muted">
+              {setup
+                ? "A place for the things worth keeping."
+                : "Your saved ideas are right where you left them."}
+            </p>
+            {(recoveryNotice || notice) && (
+              <p className="settings-notice" role="status">
+                {recoveryNotice || notice}
+              </p>
             )}
-            <Alert text={error} />
-            <button className="primary full" disabled={busy}>
-              {busy ? (
-                <Busy />
-              ) : setup ? (
-                "Create my library"
-              ) : (
-                "Open my library"
-              )}
-              <ArrowUpRight size={16} />
-            </button>
-          </form>
+            {setup && !local ? (
+              <Alert text="Open Drop It locally to create the owner account." />
+            ) : (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (loginLock.current) return;
+                  if (setup && password !== confirmation) {
+                    setError("The passwords do not match.");
+                    return;
+                  }
+                  loginLock.current = true;
+                  setBusy(true);
+                  setError("");
+                  try {
+                    await api(setup ? "/api/setup" : "/api/login", "POST", {
+                      password,
+                    });
+                    onSuccess();
+                  } catch (e) {
+                    setError(message(e));
+                  } finally {
+                    setPassword("");
+                    setConfirmation("");
+                    loginLock.current = false;
+                    setBusy(false);
+                  }
+                }}
+              >
+                <label>
+                  Password
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    autoComplete={setup ? "new-password" : "current-password"}
+                    minLength={setup ? 15 : 1}
+                    maxLength={128}
+                    required
+                    autoFocus
+                    disabled={busy}
+                  />
+                </label>
+                {setup && (
+                  <>
+                    <span className="field-note">
+                      At least 15 characters. Use a unique passphrase.
+                    </span>
+                    <label>
+                      Confirm password
+                      <input
+                        type="password"
+                        autoComplete="new-password"
+                        minLength={15}
+                        maxLength={128}
+                        required
+                        disabled={busy}
+                        value={confirmation}
+                        onChange={(event) =>
+                          setConfirmation(event.target.value)
+                        }
+                      />
+                    </label>
+                  </>
+                )}
+                <Alert text={error} />
+                <button className="primary full" disabled={busy}>
+                  {busy ? (
+                    <Busy />
+                  ) : setup ? (
+                    "Create my library"
+                  ) : (
+                    "Open my library"
+                  )}
+                  <ArrowUpRight size={16} />
+                </button>
+                {!setup && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setPassword("");
+                      setConfirmation("");
+                      setError("");
+                      setRecovering(true);
+                    }}
+                  >
+                    Forgot password?
+                  </button>
+                )}
+              </form>
+            )}
+          </>
         )}
         <div className="privacy">
           <ShieldCheck size={15} /> Private to your account
@@ -354,7 +468,7 @@ function Consent({ id }: { id: string }) {
   );
 }
 
-function Library({ onLogout }: { onLogout: () => void }) {
+function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
   const [searchDraft, setSearchDraft] = useState("");
   const [query, setQuery] = useState(""),
     [view, setView] = useState<(typeof views)[number]>("All drops"),
@@ -783,7 +897,13 @@ function Library({ onLogout }: { onLogout: () => void }) {
         />
       )}
       {settingsOpen && !embedded && (
-        <SettingsPanel onClose={() => setSettingsOpen(false)} />
+        <SettingsPanel
+          onClose={() => setSettingsOpen(false)}
+          onSignedOut={(notice) => {
+            setSettingsOpen(false);
+            onLogout(notice);
+          }}
+        />
       )}
     </div>
   );
@@ -845,13 +965,21 @@ function Panel({
     </dialog>
   );
 }
-function SettingsPanel({ onClose }: { onClose: () => void }) {
+function SettingsPanel({
+  onClose,
+  onSignedOut,
+}: {
+  onClose: () => void;
+  onSignedOut: (notice: string) => void;
+}) {
   const [settings, setSettings] = useState<LibrarySettings | null>(null);
   const [loadError, setLoadError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [busy, setBusy] = useState<"export" | "disconnect" | null>(null);
+  const [busy, setBusy] = useState<"export" | "disconnect" | "security" | null>(
+    null,
+  );
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const actionLock = useRef(false);
   const cancelDisconnect = useRef<HTMLButtonElement>(null);
@@ -882,9 +1010,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
     setError("");
     setNotice("");
     try {
-      const response = await fetch("/api/export", {
-        credentials: "same-origin",
-      });
+      const response = await browserRequest("/api/export");
       if (
         !response.ok ||
         !response.headers.get("content-type")?.startsWith("application/json")
@@ -938,6 +1064,22 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             {notice}
           </p>
         )}
+        <SecuritySettings
+          disabled={busy !== null}
+          beginAction={() => {
+            if (actionLock.current) return false;
+            actionLock.current = true;
+            setBusy("security");
+            setError("");
+            setNotice("");
+            return true;
+          }}
+          endAction={() => {
+            actionLock.current = false;
+            setBusy(null);
+          }}
+          onSignedOut={onSignedOut}
+        />
         <section className="settings-section" aria-labelledby="settings-data">
           <h3 id="settings-data">
             <ArrowDownToLine size={17} />
