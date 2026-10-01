@@ -3,6 +3,7 @@ services:
   - type: web
     name: drop-it
     runtime: node
+    branch: main
     region: ohio
     plan: 1c-2g
     numInstances: 1
