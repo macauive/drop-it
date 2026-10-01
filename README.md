@@ -101,7 +101,7 @@ The `save_item`, `update_item`, `restore_item`, and `draft_item` tools require b
 
 ## Development and checks
 
-The `tests/` directory and its fixtures are kept locally and excluded from version control. Fresh clones do not include them, so `npm test`, `npm run check`, and the additional checks below require a local copy of that directory. Lint and build can be run independently with `npm run lint` and `npm run build`.
+The automated `tests/*.test.ts` suite, its PDF helper, and synthetic PDF fixtures are versioned so a fresh clone can run `npm ci` and `npm run check`. GitHub Actions runs the same checks on pull requests and release-branch pushes without production credentials. Optional browser harnesses, live-AI checks, and screenshots remain local-only; those additional commands require their local scripts. The local `.gitignore` remains untracked.
 
 ```sh
 npm run check
@@ -114,7 +114,7 @@ Use the in-app browser for visual verification. Check desktop and mobile layouts
 
 Additional pre-commit checks:
 
-- `tests/uploads.test.ts` includes encrypted PDFs (including an empty viewing password), image-only scans, simulated parser timeout recovery, concurrent validation limits and exact page/text boundaries. Synthetic PDF fixtures are kept locally; regenerating them with `tests/generate-pdf-fixtures.py` requires Pillow, ReportLab and pypdf with AES support, not production runtime dependencies.
+- `tests/uploads.test.ts` includes encrypted PDFs (including an empty viewing password), image-only scans, simulated parser timeout recovery, concurrent validation limits and exact page/text boundaries. Synthetic PDF fixtures are versioned; regenerating them with `tests/generate-pdf-fixtures.py` requires Pillow, ReportLab and pypdf with AES support, not production runtime dependencies.
 - `DROP_IT_LIVE_AI=1 npx tsx tests/live-ai-checks.ts` runs paid, opt-in checks with the configured project key against synthetic screenshots and a scanned PDF. It checks missing, brand-only, truncated and ambiguous URLs, address-bar precedence and scan transcription. A passing sample is not a guarantee against model errors; source URLs still need review.
 - `DROP_IT_BROWSER_TEST=1 node --import tsx tests/browser-recovery.ts` starts a separate loopback-only, automatically authenticated test instance with a temporary database and mocked AI. It never loads your environment or library. Its first draft fails with a rate limit, second with a simulated timeout, third succeeds, and fourth times out for manual-save verification. `GET /__test/state` shows only test counts. Stop it gracefully with Ctrl-C to remove the temporary data. Never deploy this test harness.
 
