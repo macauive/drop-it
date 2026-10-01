@@ -72,6 +72,7 @@ type Detail = {
   source: Source;
   imageData?: string;
   fileData?: string;
+  downloadPageUrl?: string;
 };
 type ToolResponse = {
   structuredContent?: Record<string, unknown>;
@@ -131,6 +132,9 @@ async function call<T>(
     ...(typeof result._meta?.fileData === "string"
       ? { fileData: result._meta.fileData }
       : {}),
+    ...(typeof result._meta?.downloadPageUrl === "string"
+      ? { downloadPageUrl: result._meta.downloadPageUrl }
+      : {}),
   } as T;
 }
 export async function api<T>(
@@ -159,7 +163,13 @@ export const client = {
     const data = detail.fileData ?? detail.imageData;
     if (!data || !detail.source.filename)
       throw new Error("The original file is no longer available.");
-    await downloadOriginal(bridge!, data, detail.source.filename);
+    return downloadOriginal(
+      bridge!,
+      data,
+      detail.source.filename,
+      detail.downloadPageUrl,
+      id,
+    );
   },
   draft: (
     source: NonNullable<SaveInput["source"]>,

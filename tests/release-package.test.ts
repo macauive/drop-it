@@ -32,3 +32,17 @@ test('incomplete or credential-bearing release settings cannot create a package'
     }
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
+test('draft packaging omits a missing video and does not create a submission-ready archive',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'drop-it-package-draft-'));
+  try {
+    const settings=join(dir,'settings.json');
+    await writeFile(settings,JSON.stringify({origin:'https://synthetic.example.test',publisher:'Synthetic',supportEmail:'support@example.test',demoRecordingUrl:'',countries:['US']}));
+    assert.throws(()=>execFileSync(process.execPath,[script,settings],{cwd:dir,stdio:'pipe'}));
+    execFileSync(process.execPath,[script,settings,'--draft'],{cwd:dir,stdio:'pipe'});
+    await assert.rejects(access(join(dir,'dist/drop-it-plugin.zip')));
+    const zip=join(dir,'dist/drop-it-plugin-draft.zip');
+    const manifest=JSON.parse(execFileSync('unzip',['-p',zip,'.codex-plugin/plugin.json'],{encoding:'utf8'}));
+    assert.equal(manifest.extensions['com.openai'].review.demo_recording_url,undefined);
+    assert.equal(manifest.interface.privacyPolicyURL,'https://synthetic.example.test/privacy');
+  } finally {await rm(dir,{recursive:true,force:true});}
+});

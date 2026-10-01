@@ -516,7 +516,7 @@ test("MCP SDK client can discover tools, authenticate, and enforce read-only sco
   });
   assert.equal(draftDenied.isError, true);
   const resource = await client.readResource({
-    uri: "ui://drop-it/library-v2.html",
+    uri: "ui://drop-it/library-v3.html",
   });
   assert.equal(resource.contents[0].mimeType, "text/html;profile=mcp-app");
   assert.deepEqual(resource.contents[0]._meta?.ui, {

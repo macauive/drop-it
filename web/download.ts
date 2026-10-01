@@ -4,14 +4,52 @@ import { fileMime, fileTypes, maxFileBytes } from "../shared/files.js";
 // Only the already-authorized original returned by get_item is handed to the
 // host. Never ask the host to fetch a URL or accept a path from source content.
 export async function downloadOriginal(
-  host: Pick<App, "getHostCapabilities" | "downloadFile">,
+  host: Pick<App, "getHostCapabilities" | "downloadFile"> &
+    Partial<Pick<App, "openLink">>,
   data: string,
   filename: string,
+  downloadPageUrl?: string,
+  itemId?: string,
 ) {
-  if (!host.getHostCapabilities()?.downloadFile)
+  if (!host.getHostCapabilities()?.downloadFile) {
+    if (
+      downloadPageUrl &&
+      itemId &&
+      host.getHostCapabilities()?.openLinks &&
+      host.openLink
+    ) {
+      // The URL is generated in server-owned tool metadata, never source text.
+      // A normal browser sign-in and owner-scoped get are still required.
+      const url = new URL(downloadPageUrl);
+      if (
+        url.protocol !== "https:" ||
+        url.username ||
+        url.password ||
+        url.hash ||
+        url.pathname !== "/" ||
+        url.search !== `?drop=${itemId}`
+      )
+        throw new Error(
+          "The download page is invalid. Open Drop It in your browser.",
+        );
+      let result;
+      try {
+        result = await host.openLink({ url: url.href });
+      } catch {
+        throw new Error(
+          "Could not open Drop It. Open it in your browser to download the original.",
+        );
+      }
+      if (result.isError)
+        throw new Error(
+          "Opening Drop It was cancelled or declined by the host.",
+        );
+      return "browser" as const;
+    }
     throw new Error(
       "This host does not support file downloads. Open Drop It in your browser to download the original.",
     );
+  }
   const separator = data.indexOf(",");
   const header = data.slice(0, separator);
   const blob = data.slice(separator + 1);
@@ -56,4 +94,5 @@ export async function downloadOriginal(
   }
   if (result.isError)
     throw new Error("Download was cancelled or declined by the host.");
+  return "download" as const;
 }

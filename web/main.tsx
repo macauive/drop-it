@@ -39,6 +39,7 @@ import {
   type SaveInput,
   type SearchResult,
   settingsSchema,
+  idSchema,
   type LibrarySettings,
 } from "../shared/schema.js";
 import {
@@ -559,7 +560,13 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
     }),
     [loading, setLoading] = useState(true),
     [error, setError] = useState("");
-  const [selected, setSelected] = useState<string | null>(null),
+  const [selected, setSelected] = useState<string | null>(() => {
+      if (embedded) return null;
+      const parsed = idSchema.safeParse(
+        new URLSearchParams(location.search).get("drop"),
+      );
+      return parsed.success ? parsed.data : null;
+    }),
     [adding, setAdding] = useState(false),
     [offset, setOffset] = useState(0),
     [tick, setTick] = useState(0),
@@ -1686,6 +1693,7 @@ function Detail({
     [busy, setBusy] = useState(false),
     [editing, setEditing] = useState(false),
     [showTranscription, setShowTranscription] = useState(false),
+    [downloadNotice, setDownloadNotice] = useState(""),
     [confirmDelete, setConfirmDelete] = useState(false);
   const transcriptionId = useId();
   const wipeConfirmation = useRef<HTMLDivElement>(null);
@@ -1746,6 +1754,7 @@ function Detail({
     >
       <div className="panel-body">
         <Alert text={error} />
+        {downloadNotice && <p role="status">{downloadNotice}</p>}
         {error && <button onClick={load}>Reload item</button>}
         {!detail ? (
           !error && <Busy />
@@ -1902,8 +1911,13 @@ function Detail({
                     onClick={async () => {
                       setBusy(true);
                       setError("");
+                      setDownloadNotice("");
                       try {
-                        await client.download(id);
+                        const result = await client.download(id);
+                        if (result === "browser")
+                          setDownloadNotice(
+                            "Download the original from the Drop It page opened in your browser. Sign in there if prompted.",
+                          );
                       } catch (error) {
                         setError(message(error));
                       } finally {

@@ -28,6 +28,7 @@ const httpsUrl = z
       !url.hostname.endsWith(".example")
     );
   });
+const draft = process.argv[3] === "--draft";
 const schema = z
   .object({
     origin: httpsUrl.refine(
@@ -35,7 +36,7 @@ const schema = z
     ),
     publisher: z.string().trim().min(1).max(80),
     supportEmail: z.string().email().max(254),
-    demoRecordingUrl: httpsUrl,
+    demoRecordingUrl: draft ? z.union([z.literal(""), httpsUrl]) : httpsUrl,
     countries: z
       .array(z.string().regex(/^[A-Z]{2}$/))
       .min(1)
@@ -112,7 +113,9 @@ try {
           "com.openai": {
             review: {
               test_cases: review,
-              demo_recording_url: settings.demoRecordingUrl,
+              ...(settings.demoRecordingUrl
+                ? { demo_recording_url: settings.demoRecordingUrl }
+                : {}),
               commerce: false,
             },
             publication: {
@@ -140,7 +143,8 @@ try {
   await mkdir(outputDir, { recursive: true });
   if ((await lstat(outputDir)).isSymbolicLink())
     throw new Error("Output must not be a symlink.");
-  const output = join(outputDir, "drop-it-plugin.zip");
+  const filename = draft ? "drop-it-plugin-draft.zip" : "drop-it-plugin.zip";
+  const output = join(outputDir, filename);
   await rm(output, { force: true });
   execFileSync(
     "zip",
@@ -148,7 +152,7 @@ try {
     { cwd: directory, stdio: "pipe" },
   );
   console.log(
-    "Created dist/drop-it-plugin.zip. Run the review cases in ChatGPT before submission; packaging does not verify the hosted service.",
+    `Created dist/${filename}. ${draft ? "Draft for preliminary checks only; complete reviewer access and recording before submission. " : ""}Run the review cases in ChatGPT before submission; packaging does not verify the hosted service.`,
   );
 } finally {
   await rm(directory, { recursive: true, force: true });

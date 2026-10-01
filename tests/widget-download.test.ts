@@ -7,6 +7,24 @@ type Host = Pick<App, "getHostCapabilities" | "downloadFile">;
 const original = Buffer.from("Synthetic original, unchanged.\n");
 const data = `data:text/plain;base64,${original.toString("base64")}`;
 
+test("hosts without downloads can open the authenticated same-drop browser fallback", async () => {
+  const id = "d60167ef-fda0-4e94-9a35-2a80db4023d3";
+  let opened = "";
+  const host = {
+    getHostCapabilities: () => ({openLinks:{}}),
+    downloadFile: async () => { throw new Error("Direct download must not be called"); },
+    openLink: async ({url}:{url:string}) => {opened=url; return {};},
+  };
+  assert.equal(await downloadOriginal(host,data,"source.txt",`https://synthetic.example.test/?drop=${id}`,id),"browser");
+  assert.equal(opened,`https://synthetic.example.test/?drop=${id}`);
+  opened="";
+  for(const url of [`http://synthetic.example.test/?drop=${id}`,`https://synthetic.example.test/?drop=${id}&redirect=https://other.test`,`https://user:secret@synthetic.example.test/?drop=${id}`,`https://synthetic.example.test/other?drop=${id}`])
+    await assert.rejects(downloadOriginal(host,data,"source.txt",url,id));
+  assert.equal(opened,"");
+  host.openLink=async()=>({isError:true});
+  await assert.rejects(downloadOriginal(host,data,"source.txt",`https://synthetic.example.test/?drop=${id}`,id),/cancelled or declined/);
+});
+
 test("widget downloads preserve original bytes through the host with a safe filename", async () => {
   let calls = 0;
   const host: Host = {
