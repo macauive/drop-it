@@ -16,6 +16,7 @@
     "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
     "check": "npm run lint && npm run build && npm test",
     "format": "prettier --write server web shared tests *.ts *.js *.json README.md AGENTS.md",
+    "account:create": "node --import tsx scripts/create-account.ts",
     "release:preflight": "node --import tsx scripts/preflight.ts",
     "release:package": "node scripts/package-plugin.mjs"
   },
