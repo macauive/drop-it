@@ -81,7 +81,10 @@ export function createMcpServer(
         annotations: {
           readOnlyHint: !write || name === "draft_item",
           destructiveHint: destructive,
-          openWorldHint: false,
+          // Drafting and hybrid/semantic search send bounded content to the
+          // independently operated AI provider. Describe that capability even
+          // when a particular search uses keyword mode or AI is unavailable.
+          openWorldHint: ["draft_item", "search_items"].includes(name),
           idempotentHint: !["upload_source", "draft_item"].includes(name),
         },
         _meta: {

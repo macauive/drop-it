@@ -464,6 +464,15 @@ test("MCP SDK client can discover tools, authenticate, and enforce read-only sco
     new StreamableHTTPClientTransport(new URL(`${origin}/mcp`)),
   );
   const tools = await anonymous.listTools();
+  // Host consent must reflect tools that can send content to an AI provider;
+  // account-only retrieval and writes must retain their bounded declaration.
+  assert.deepEqual(
+    tools.tools
+      .filter((tool) => tool.annotations?.openWorldHint === true)
+      .map((tool) => tool.name)
+      .sort(),
+    ["draft_item", "search_items"],
+  );
   // ChatGPT rejects Unicode property escapes in published JSON Schema patterns.
   // Runtime category refinements still enforce Unicode character restrictions.
   for (const tool of tools.tools) {
