@@ -30,6 +30,7 @@ import {
   newPasswordSchema,
   recoveryCodeSchema,
   idSchema,
+  usernameSchema,
 } from "../shared/schema.js";
 
 // OWASP's 32 MiB scrypt profile; only these explicit profiles are accepted.
@@ -222,12 +223,51 @@ export class Auth implements OAuthServerProvider {
       return this.issueSession(tx, id, userAgent);
     });
   }
-  async login(password: string, userAgent?: string) {
+  async register(username: string, password: string, userAgent?: string) {
+    if (!this.config.signupEnabled || !this.config.publicAccounts)
+      throw new AppError(
+        403,
+        "SIGNUP_CLOSED",
+        "New accounts are not available yet.",
+      );
+    username = usernameSchema.parse(username);
+    newPasswordSchema.parse(password);
+    if (username === "owner")
+      throw new AppError(
+        409,
+        "USERNAME_UNAVAILABLE",
+        "Choose another username.",
+      );
+    const hash = await hashPassword(password);
+    return this.db.transaction(async (tx) => {
+      const id = randomUUID();
+      const { rows } = await tx.query(
+        "INSERT INTO users(id,singleton,username,password_hash) VALUES($1,NULL,$2,$3) ON CONFLICT(username) DO NOTHING RETURNING id",
+        [id, username, hash],
+      );
+      if (!rows.length)
+        throw new AppError(
+          409,
+          "USERNAME_UNAVAILABLE",
+          "Choose another username.",
+        );
+      return this.issueSession(tx, id, userAgent);
+    });
+  }
+  async login(password: string, userAgent?: string, username?: string) {
     currentPasswordSchema.parse(password);
+    const name =
+      username === undefined ? "owner" : usernameSchema.parse(username);
     const { rows } = await this.db.query<UserRow>(
-      "SELECT id,password_hash,auth_version FROM users WHERE singleton=true LIMIT 1",
+      "SELECT id,password_hash,auth_version FROM users WHERE username=$1 OR ($1='owner' AND singleton=true) LIMIT 1",
+      [name],
     );
     const user = rows[0];
+    // Unknown usernames still pay the normal password-work cost.
+    if (!user) {
+      await derivePassword(password, "00000000000000000000000000000000");
+      throw loginFailed();
+    }
     const verification =
       user && (await verifyPassword(password, user.password_hash));
     if (!verification?.valid) throw loginFailed();
@@ -425,7 +465,7 @@ export class Auth implements OAuthServerProvider {
     newPasswordSchema.parse(newPassword);
     const codeHash = digest(recoveryCode);
     const { rows } = await this.db.query<UserRow>(
-      "SELECT id,recovery_hash,auth_version FROM users WHERE singleton=true AND recovery_hash=$1",
+      "SELECT id,recovery_hash,auth_version FROM users WHERE recovery_hash=$1",
       [codeHash],
     );
     const snapshot = rows[0];
@@ -450,6 +490,23 @@ export class Auth implements OAuthServerProvider {
         snapshot.id,
       ]);
       await this.invalidateCredentials(tx, snapshot.id, true);
+    });
+  }
+  async deleteAccount(owner: string, token: string, password: string) {
+    const snapshot = await this.reauthenticate(owner, token, password);
+    await this.db.transaction(async (tx) => {
+      await this.recheck(tx, snapshot, token);
+      // Keep the owner lock until both content and credentials are removed.
+      // Explicit ordering preserves all foreign keys and rollback semantics.
+      await tx.query("DELETE FROM item_embeddings WHERE owner=$1", [owner]);
+      await tx.query("DELETE FROM save_requests WHERE owner=$1", [owner]);
+      await tx.query("DELETE FROM items WHERE owner=$1", [owner]);
+      await tx.query("DELETE FROM sources WHERE owner=$1", [owner]);
+      await tx.query("DELETE FROM attachments WHERE owner=$1", [owner]);
+      await tx.query("DELETE FROM sessions WHERE owner=$1", [owner]);
+      await tx.query("DELETE FROM oauth_codes WHERE owner=$1", [owner]);
+      await tx.query("DELETE FROM oauth_tokens WHERE owner=$1", [owner]);
+      await tx.query("DELETE FROM users WHERE id=$1", [owner]);
     });
   }
   async logoutEverywhere(

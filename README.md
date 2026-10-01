@@ -11,7 +11,7 @@ npm ci
 npm run dev
 ```
 
-Open http://localhost:4317 and create your owner password (15–128 characters). No AI API key, cloud database, or Docker is required. The password is hashed with Node's scrypt using explicit N=32768, r=8, p=3 parameters; existing legacy hashes upgrade after a successful login. Sessions use HTTP-only cookies. Owner setup is allowed only from loopback while PUBLIC_URL is local. There is no public signup.
+Open http://localhost:4317 and create your owner password (15–128 characters). No AI API key, cloud database, or Docker is required. The password is hashed with Node's scrypt using explicit N=32768, r=8, p=3 parameters; existing legacy hashes upgrade after a successful login. Sessions use HTTP-only cookies. Owner setup is allowed only from loopback while PUBLIC_URL is local. Public signup is disabled by default. `ACCOUNT_MODE=public` enables username-based sign-in; `ALLOW_SIGNUP=true` enables registration. See the release preparation section before exposing signup.
 
 `npm run dev` builds the UI once and watches server files. After UI edits, run `npm run build:web` and restart the server to load the new bundle. For a normal run after building, use `npm start`.
 
@@ -122,11 +122,11 @@ When local PostgreSQL binaries are installed, `node --import tsx tests/postgres-
 
 ## Deliberate limits
 
-- Private, single-owner onboarding; no public launch, billing, shared collections or team invitations.
+- Defaults to private, single-owner onboarding. Public username accounts are implemented but a public deployment and live ChatGPT review are still required. No billing, shared collections or team invitations.
 - No browser extension, Apple Notes import, reminders or automatic webpage scraping.
 - No MFA, passkeys or email-based recovery. Keep your password and offline recovery code secure.
 - Backups may retain deleted content until you rotate them; export files contain your original private content.
-- Local OAuth implementation is intended for private use. A broader release needs hosted identity/provider review and deployment hardening.
+- OAuth and password accounts have local protocol/security coverage. Public HTTPS/proxy behavior, abuse controls at the chosen hosting tier, backup restoration and live ChatGPT integration must be verified before launch.
 
 ## Design references
 
@@ -137,3 +137,49 @@ The MCP transport and resource wiring follow OpenAI's small to-do quickstart, ad
 - https://developers.openai.com/plugins/build/auth
 - https://developers.openai.com/plugins/reference
 - https://github.com/openai/openai-apps-sdk-examples
+
+## Release preparation
+
+The public-account and release code is prepared locally. This is not a deployment or evidence of ChatGPT approval. Existing data directories and secrets are not modified by build or test commands.
+
+### Accounts and migration
+
+- Default `ACCOUNT_MODE=private` preserves password-only local owner access.
+- `ACCOUNT_MODE=public` enables private usernames (3–40 ASCII letters/numbers/underscores/hyphens, normalized to lowercase). The original owner signs in as `owner` with the existing password. That name cannot be registered. Existing ownership UUIDs, sessions and library records survive database migration 8.
+- `ALLOW_SIGNUP=false` is the default. Existing public accounts can still sign in when signup is closed. A new empty hosted database has no accounts until signup is deliberately enabled; the local-only setup endpoint remains unavailable remotely.
+- Recovery codes work across accounts and remain one-time. There is no email verification or email recovery; usernames are not email addresses. Users should generate a recovery code in Settings immediately after signup.
+- Permanent account deletion requires a live session, the current password, same-origin POST and exact `DELETE` confirmation. It removes only that owner's active database content and credentials in one transaction. If any step fails, the transaction rolls back. Existing external exports and backup copies are unaffected.
+- Moving from embedded PGlite to hosted PostgreSQL is a separate data migration. Do not point `DATABASE_URL` at a new database and assume the local library transferred. Keep the local instance and an offline backup until an explicit migration and reconciliation have passed. Never upload the `.data` directory as application source.
+
+### Hosting proposal
+
+`render.yaml` prepares one managed Node service (2 GB) and a private-network PostgreSQL 16 database with 5 GB disk. Signup, automatic deploys and disk autoscaling start disabled. Provisioning these resources costs money and has not been performed. The September 30, 2026 pricing lookup indicated approximately $32.50/month before AI, domain, taxes, bandwidth/build overages and other usage ($25 server + $6 database + $1.50 storage). Verify the actual checkout price before provisioning; capacity under production load is unverified.
+
+- Render supplies `RENDER_EXTERNAL_URL` for initial HTTPS operation. Set `PUBLIC_URL` to the final exact origin when adding a custom domain. Configure only the canonical custom domain so health checks use the expected Host header.
+- `DATABASE_URL` is supplied from the managed database; public production mode refuses embedded ephemeral storage. Use the internal connection string in the same region, and keep external database access disabled. For any external database connection use verified TLS, never disable certificate verification.
+- `TRUST_PROXY_HOPS=1` is prepared for the managed ingress. Verify the forwarding chain with synthetic requests before launch; do not expose the Node port directly or trust arbitrary client forwarding headers.
+- Existing per-owner AI concurrency/rate limits and HTTP limits are process-local. The deployment intentionally uses one instance. Add shared enforcement and load testing before horizontal scaling. Limits are not a dollar spending cap: configure an OpenAI project budget and monitor usage before opening signup.
+- `/health` checks the process; `/ready` also queries PostgreSQL and returns only a success/failure flag. Render uses `/ready` to gate deployment and monitor the process. Configure deployment/error alerts in the account and verify restart behavior.
+- Confirm the actual backup/PITR retention and exercise restoration to a separate database before launch. Do not claim backups are working from configuration alone.
+- A portable Dockerfile is included; its allowlisted build context excludes env files, private data, Git history, tests and uploads. The container itself has not been built or deployed here.
+
+### Public pages and domain verification
+
+Set `PUBLIC_PUBLISHER_NAME`, `PUBLIC_SUPPORT_EMAIL`, and the verified `BACKUP_RETENTION_DAYS` to enable `/about`, `/support`, `/privacy`, and `/terms`. Until then these routes return 503 instead of invented publisher details. Review the drafted policy wording against the real hosting configuration before publishing. Remote public signup requires these settings. The support address must actually receive mail; buying a domain does not create a mailbox.
+
+Copy the exact OpenAI portal challenge to `OPENAI_APPS_CHALLENGE` when requested. `/.well-known/openai-apps-challenge` serves it as plain text, or returns 404 when unset. Configure exact `OAUTH_REDIRECT_URIS` from ChatGPT; the repository does not guess them.
+
+### Preflight and submission package
+
+```sh
+npm run release:preflight
+npm run release:package -- private/release-settings.json
+```
+
+Preflight reports configuration presence only, without secret values or live API calls. It exits unsuccessfully while release settings are missing. Copy `release/settings.example.json` to a local file and enter the real public origin, verified publisher name, support address, walkthrough recording URL and desired country codes. The example intentionally cannot produce a package.
+
+The package command creates `dist/drop-it-plugin.zip` from an explicit three-file allowlist: the manifest, remote MCP configuration and icon. It excludes server source, env files, credentials and library content. Reviewer credentials are entered separately in the OpenAI dashboard, never added to this JSON or ZIP. The package command is not evidence that the endpoint, pages, video or publisher verification are ready.
+
+`release/review-cases.json` contains five positive and three negative review scenarios, not completed test results. Run them in ChatGPT against a dedicated sample account, including cross-conversation retrieval, screenshot transfer, edits and Trash/restore. Verify desktop and mobile, record the walkthrough, complete publisher/domain verification, upload the ZIP, resolve scan findings, then submit. Only publish after approval. Do not use the real owner's private library for review.
+
+Official references: [OpenAI submission](https://developers.openai.com/plugins/deploy/submission), [Render Blueprint](https://render.com/docs/blueprint-spec), [Render pricing](https://render.com/pricing), [Render backups](https://render.com/docs/postgresql-backups).

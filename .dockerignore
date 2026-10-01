@@ -1,0 +1,12 @@
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!tsconfig.json
+!vite.config.ts
+!server/
+!server/**
+!shared/
+!shared/**
+!web/
+!web/**

@@ -1,0 +1,39 @@
+# Prepared deployment; provisioning creates paid resources. Review pricing first.
+services:
+  - type: web
+    name: drop-it
+    runtime: node
+    region: ohio
+    plan: 1c-2g
+    numInstances: 1
+    autoDeployTrigger: off
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: node --import tsx server/index.ts
+    healthCheckPath: /ready
+    envVars:
+      - key: NODE_VERSION
+        value: 24
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: drop-it-db
+          property: connectionString
+      - key: ACCOUNT_MODE
+        value: public
+      - key: ALLOW_SIGNUP
+        value: "false"
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OAUTH_REDIRECT_URIS
+        sync: false
+databases:
+  - name: drop-it-db
+    region: ohio
+    plan: 0.1c-256mb
+    diskSizeGB: 5
+    postgresMajorVersion: "16"
+    ipAllowList: []
+    storageAutoscalingEnabled: false

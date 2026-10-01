@@ -161,6 +161,8 @@ function App() {
     authenticated: boolean;
     needsSetup: boolean;
     localSetup: boolean;
+    publicAccounts?: boolean;
+    signupEnabled?: boolean;
   } | null>(
     embedded
       ? { authenticated: true, needsSetup: false, localSetup: false }
@@ -192,6 +194,8 @@ function App() {
         authenticated: false,
         needsSetup: false,
         localSetup: value?.localSetup ?? false,
+        publicAccounts: value?.publicAccounts,
+        signupEnabled: value?.signupEnabled,
       }));
     };
     window.addEventListener("dropit:unauthenticated", sessionEnded);
@@ -226,6 +230,8 @@ function App() {
       <Login
         setup={session.needsSetup}
         local={session.localSetup}
+        publicAccounts={session.publicAccounts ?? false}
+        signupEnabled={session.signupEnabled ?? false}
         notice={authNotice}
         onSuccess={() => {
           setAuthNotice("");
@@ -250,11 +256,15 @@ function App() {
 function Login({
   setup,
   local,
+  publicAccounts,
+  signupEnabled,
   notice,
   onSuccess,
 }: {
   setup: boolean;
   local: boolean;
+  publicAccounts: boolean;
+  signupEnabled: boolean;
   notice: string;
   onSuccess: () => void;
 }) {
@@ -265,6 +275,9 @@ function Login({
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   const loginLock = useRef(false);
+  const [registering, setRegistering] = useState(false);
+  const [username, setUsername] = useState("");
+  const creating = setup || registering;
   return (
     <main className="auth-shell">
       <Brand />
@@ -283,9 +296,9 @@ function Login({
         ) : (
           <>
             <span className="eyebrow">YOUR PRIVATE LIBRARY</span>
-            <h1>{setup ? "Make a little room." : "Welcome back."}</h1>
+            <h1>{creating ? "Make a little room." : "Welcome back."}</h1>
             <p className="muted">
-              {setup
+              {creating
                 ? "A place for the things worth keeping."
                 : "Your saved ideas are right where you left them."}
             </p>
@@ -301,7 +314,7 @@ function Login({
                 onSubmit={async (e) => {
                   e.preventDefault();
                   if (loginLock.current) return;
-                  if (setup && password !== confirmation) {
+                  if (creating && password !== confirmation) {
                     setError("The passwords do not match.");
                     return;
                   }
@@ -309,9 +322,18 @@ function Login({
                   setBusy(true);
                   setError("");
                   try {
-                    await api(setup ? "/api/setup" : "/api/login", "POST", {
-                      password,
-                    });
+                    await api(
+                      registering
+                        ? "/api/register"
+                        : setup
+                          ? "/api/setup"
+                          : "/api/login",
+                      "POST",
+                      {
+                        password,
+                        ...(publicAccounts ? { username } : {}),
+                      },
+                    );
                     onSuccess();
                   } catch (e) {
                     setError(message(e));
@@ -323,21 +345,51 @@ function Login({
                   }
                 }}
               >
+                {publicAccounts && (
+                  <label>
+                    Username
+                    <input
+                      name="username"
+                      autoComplete="username"
+                      autoCapitalize="none"
+                      spellCheck={false}
+                      minLength={3}
+                      maxLength={40}
+                      pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*"
+                      required
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value)}
+                      disabled={busy}
+                    />
+                    <span className="field-note">
+                      Use 3–40 letters, numbers, underscores or hyphens. Your
+                      username is private.
+                    </span>
+                  </label>
+                )}
+                {registering && (
+                  <p className="field-note">
+                    No email is collected. After signing up, save a recovery
+                    code from Settings so you can recover a forgotten password.
+                  </p>
+                )}
                 <label>
                   Password
                   <input
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    autoComplete={setup ? "new-password" : "current-password"}
-                    minLength={setup ? 15 : 1}
+                    autoComplete={
+                      creating ? "new-password" : "current-password"
+                    }
+                    minLength={creating ? 15 : 1}
                     maxLength={128}
                     required
                     autoFocus
                     disabled={busy}
                   />
                 </label>
-                {setup && (
+                {creating && (
                   <>
                     <span className="field-note">
                       At least 15 characters. Use a unique passphrase.
@@ -363,14 +415,14 @@ function Login({
                 <button className="primary full" disabled={busy}>
                   {busy ? (
                     <Busy />
-                  ) : setup ? (
+                  ) : creating ? (
                     "Create my library"
                   ) : (
                     "Open my library"
                   )}
                   <ArrowUpRight size={16} />
                 </button>
-                {!setup && (
+                {!creating && (
                   <button
                     type="button"
                     disabled={busy}
@@ -384,6 +436,22 @@ function Login({
                     Forgot password?
                   </button>
                 )}
+                {publicAccounts && signupEnabled && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setRegistering((value) => !value);
+                      setError("");
+                      setPassword("");
+                      setConfirmation("");
+                    }}
+                  >
+                    {registering
+                      ? "Already have an account? Sign in"
+                      : "Create an account"}
+                  </button>
+                )}
               </form>
             )}
           </>
@@ -391,6 +459,14 @@ function Login({
         <div className="privacy">
           <ShieldCheck size={15} /> Private to your account
         </div>
+        {publicAccounts && (
+          <nav className="privacy" aria-label="Product information">
+            <a href="/about">About</a>
+            <a href="/support">Support</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
+          </nav>
+        )}
       </div>
     </main>
   );

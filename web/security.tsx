@@ -180,12 +180,14 @@ type SecurityAction =
   | { kind: "password" }
   | { kind: "recovery" }
   | { kind: "logout-all" }
+  | { kind: "delete-account" }
   | { kind: "session"; session: SecurityInfo["sessions"][number] };
 
 const actionTitle = (action: SecurityAction) => {
   if (action.kind === "password") return "Change password";
   if (action.kind === "recovery") return "Generate recovery code";
   if (action.kind === "logout-all") return "Sign out everywhere";
+  if (action.kind === "delete-account") return "Permanently delete account";
   return action.session.current
     ? "Sign out this browser"
     : "Revoke browser session";
@@ -214,6 +216,8 @@ function SecurityActionForm({
       "Save the new code somewhere safe outside Drop It. It replaces any existing code and lets you reset your password once. Anyone with the code can access your account.",
     "logout-all":
       "This signs out this browser and all other browsers and disconnects every app. Your password and saved drops stay the same.",
+    "delete-account":
+      "Permanently deletes your account, every drop, original file, and app connection. There is no Trash or recovery period. Download your library export first if you want a copy. Existing backups may retain data until they expire. Type DELETE below to confirm.",
     session:
       action.kind === "session" && action.session.current
         ? "This signs out the browser you are using. Other browser sessions and connected apps remain signed in."
@@ -227,6 +231,10 @@ function SecurityActionForm({
         if (disabled || lock.current) return;
         if (action.kind === "password" && newPassword !== confirmation) {
           setError("The new passwords do not match.");
+          return;
+        }
+        if (action.kind === "delete-account" && confirmation !== "DELETE") {
+          setError("Type DELETE to confirm permanent account deletion.");
           return;
         }
         lock.current = true;
@@ -273,6 +281,18 @@ function SecurityActionForm({
             onPassword={setNewPassword}
             onConfirmation={setConfirmation}
           />
+        )}
+        {action.kind === "delete-account" && (
+          <label>
+            Type DELETE to confirm
+            <input
+              required
+              autoComplete="off"
+              value={confirmation}
+              maxLength={6}
+              onChange={(event) => setConfirmation(event.target.value)}
+            />
+          </label>
         )}
         <ErrorMessage text={error} />
         <div className="actions">
@@ -384,6 +404,12 @@ export function SecuritySettings({
         onSignedOut(
           "Signed out of every browser. Connected apps have been disconnected.",
         );
+      } else if (action.kind === "delete-account") {
+        await confirmedAction("/api/delete-account", {
+          currentPassword,
+          confirmation: "DELETE",
+        });
+        onSignedOut("Your account and library have been permanently deleted.");
       } else {
         const result = await api<{ signedOut: boolean }>(
           `/api/sessions/${encodeURIComponent(action.session.id)}`,
@@ -579,6 +605,21 @@ export function SecuritySettings({
               Signs out all browsers, including this one, and disconnects every
               app.
             </p>
+          </div>
+          <div className="security-group">
+            <h4>Delete account</h4>
+            <p>
+              Permanently remove your account and library. Export anything you
+              want to keep first.
+            </p>
+            <button
+              disabled={disabled || Boolean(action) || Boolean(recoveryCode)}
+              onClick={(event) =>
+                openAction({ kind: "delete-account" }, event.currentTarget)
+              }
+            >
+              Delete my account
+            </button>
           </div>
           {action && (
             <SecurityActionForm

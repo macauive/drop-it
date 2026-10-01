@@ -21,7 +21,12 @@ declare global {
   }
 }
 export const embedded = window.parent !== window;
-const publicAuthPaths = new Set(["/api/login", "/api/setup", "/api/recover"]);
+const publicAuthPaths = new Set([
+  "/api/login",
+  "/api/setup",
+  "/api/register",
+  "/api/recover",
+]);
 let browserAuthVersion = 0;
 
 // Shared by JSON requests, uploads, and exports. A wrong credential remains an

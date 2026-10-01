@@ -27,6 +27,16 @@ export type LibrarySettings = z.infer<typeof settingsSchema>;
 export const idSchema = z.string().uuid();
 export const currentPasswordSchema = z.string().min(1).max(128);
 export const newPasswordSchema = z.string().min(15).max(128);
+export const usernameSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(3)
+  .max(40)
+  .regex(
+    /^[a-z0-9][a-z0-9_-]*$/,
+    "Use letters, numbers, underscores or hyphens.",
+  );
 export const recoveryCodeSchema = z
   .string()
   .max(100)

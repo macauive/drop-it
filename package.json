@@ -15,7 +15,9 @@
     "lint": "eslint .",
     "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
     "check": "npm run lint && npm run build && npm test",
-    "format": "prettier --write server web shared tests *.ts *.js *.json README.md AGENTS.md"
+    "format": "prettier --write server web shared tests *.ts *.js *.json README.md AGENTS.md",
+    "release:preflight": "node --import tsx scripts/preflight.ts",
+    "release:package": "node scripts/package-plugin.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",

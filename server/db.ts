@@ -212,4 +212,20 @@ export async function migrate(db: Database) {
     );
     await tx.query("INSERT INTO schema_migrations(version) VALUES(7)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=8"))
+        .rows.length
+    )
+      return;
+    // Retain the original singleton owner and all ownership UUIDs. New accounts
+    // use NULL for singleton; PostgreSQL's unique constraint permits multiple NULLs.
+    await tx.query(`ALTER TABLE users ADD COLUMN username text UNIQUE,
+      ADD CONSTRAINT users_username_format CHECK(username IS NULL OR
+        (username ~ '^[a-z0-9][a-z0-9_-]{2,39}$' AND username <> 'owner'))`);
+    await tx.query(
+      "CREATE UNIQUE INDEX users_recovery_hash_unique ON users(recovery_hash) WHERE recovery_hash IS NOT NULL",
+    );
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(8)");
+  });
 }

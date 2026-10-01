@@ -24,8 +24,10 @@ import {
   newPasswordSchema,
   recoveryCodeSchema,
   securityInfoSchema,
+  usernameSchema,
 } from "../shared/schema.js";
 import { OpenAIProvider, type AIProvider } from "./ai.js";
+import { addPublicPages } from "./public-pages.js";
 
 export function createApp(
   db: Database,
@@ -53,6 +55,7 @@ export function createApp(
     (m) => `'sha256-${createHash("sha256").update(m[1]).digest("base64")}'`,
   );
   app.disable("x-powered-by");
+  if (config.trustProxy) app.set("trust proxy", config.trustProxy);
   app.use(
     helmet({
       contentSecurityPolicy: {
@@ -78,7 +81,23 @@ export function createApp(
     next();
   });
   app.use(cookieParser());
+  addPublicPages(app, config.publicSite);
+  app.get("/.well-known/openai-apps-challenge", (_req, res) => {
+    if (!config.domainChallenge) {
+      res.sendStatus(404);
+      return;
+    }
+    res.type("text/plain").send(config.domainChallenge);
+  });
   app.get("/health", (_req, res) => res.json({ ok: true }));
+  app.get("/ready", async (_req, res) => {
+    try {
+      await db.query("SELECT 1");
+      res.json({ ok: true });
+    } catch {
+      res.status(503).json({ ok: false });
+    }
+  });
   app.use(
     mcpAuthRouter({
       provider: auth,
@@ -119,7 +138,12 @@ export function createApp(
     legacyHeaders: false,
     message: { error: "Too many sign-in attempts. Please try again later." },
   });
-  const passwordSchema = z.object({ password: currentPasswordSchema }).strict();
+  const passwordSchema = z
+    .object({
+      password: currentPasswordSchema,
+      username: usernameSchema.optional(),
+    })
+    .strict();
   const setupSchema = z.object({ password: newPasswordSchema }).strict();
   const reauthSchema = z
     .object({ currentPassword: currentPasswordSchema })
@@ -136,8 +160,10 @@ export function createApp(
     const owner = await auth.sessionOwner(req.cookies[cookie]);
     res.json({
       authenticated: Boolean(owner),
-      needsSetup: !(await auth.hasOwner()),
+      needsSetup: !config.publicAccounts && !(await auth.hasOwner()),
       localSetup: config.local,
+      publicAccounts: config.publicAccounts ?? false,
+      signupEnabled: config.signupEnabled ?? false,
     });
   });
   app.post("/api/setup", loginLimiter, async (req, res) => {
@@ -160,12 +186,27 @@ export function createApp(
       )
       .json({ ok: true });
   });
-  app.post("/api/login", loginLimiter, async (req, res) => {
-    const { password } = passwordSchema.parse(req.body);
+  app.post("/api/register", loginLimiter, async (req, res) => {
+    const { username, password } = z
+      .object({ username: usernameSchema, password: newPasswordSchema })
+      .strict()
+      .parse(req.body);
     res
       .cookie(
         cookie,
-        await auth.login(password, req.get("User-Agent")),
+        await auth.register(username, password, req.get("User-Agent")),
+        cookieOptions,
+      )
+      .json({ ok: true });
+  });
+  app.post("/api/login", loginLimiter, async (req, res) => {
+    const { password, username } = passwordSchema.parse(req.body);
+    if (config.publicAccounts && !username)
+      throw new AppError(400, "USERNAME_REQUIRED", "Enter your username.");
+    res
+      .cookie(
+        cookie,
+        await auth.login(password, req.get("User-Agent"), username),
         cookieOptions,
       )
       .json({ ok: true });
@@ -261,6 +302,23 @@ export function createApp(
     if (result.signedOut)
       res.clearCookie(cookie, { ...cookieOptions, maxAge: undefined });
     res.json(result);
+  });
+  app.post("/api/delete-account", reauthLimiter, async (req, res) => {
+    const { currentPassword } = z
+      .object({
+        currentPassword: currentPasswordSchema,
+        confirmation: z.literal("DELETE"),
+      })
+      .strict()
+      .parse(req.body);
+    await auth.deleteAccount(
+      res.locals.owner,
+      req.cookies[cookie],
+      currentPassword,
+    );
+    res
+      .clearCookie(cookie, { ...cookieOptions, maxAge: undefined })
+      .json({ ok: true });
   });
   app.get("/api/settings", async (_req, res) => {
     const { rows } = await db.query<{ count: string }>(

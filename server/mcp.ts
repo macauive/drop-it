@@ -78,13 +78,9 @@ export function createMcpServer(
           : description,
         inputSchema: schema,
         annotations: {
-          readOnlyHint: !write,
+          readOnlyHint: !write || name === "draft_item",
           destructiveHint: destructive,
-          openWorldHint: [
-            "upload_source",
-            "search_items",
-            "draft_item",
-          ].includes(name),
+          openWorldHint: false,
           idempotentHint: !["upload_source", "draft_item"].includes(name),
         },
         _meta: {
