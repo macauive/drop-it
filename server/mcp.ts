@@ -81,10 +81,14 @@ export function createMcpServer(
         annotations: {
           readOnlyHint: !write || name === "draft_item",
           destructiveHint: destructive,
-          // Drafting and hybrid/semantic search send bounded content to the
-          // independently operated AI provider. Describe that capability even
-          // when a particular search uses keyword mode or AI is unavailable.
-          openWorldHint: ["draft_item", "search_items"].includes(name),
+          // AI tools call an external provider; uploads retrieve user-selected
+          // files from ChatGPT's independently operated file service. These
+          // labels do not relax scopes, file-host allowlists, or ownership.
+          openWorldHint: [
+            "draft_item",
+            "search_items",
+            "upload_source",
+          ].includes(name),
           idempotentHint: !["upload_source", "draft_item"].includes(name),
         },
         _meta: {
