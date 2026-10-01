@@ -8,6 +8,7 @@ import type {
   DraftResult,
 } from "../shared/schema.js";
 import { fileMime } from "../shared/files.js";
+import { downloadOriginal } from "./download.js";
 
 type FileRef = { fileId: string; fileName?: string; mimeType?: string };
 declare global {
@@ -151,6 +152,15 @@ export async function api<T>(
   return result;
 }
 export const client = {
+  download: async (id: string) => {
+    // Refresh authorization and expiration before exporting, rather than
+    // downloading bytes retained by an old widget instance.
+    const detail = await call<Detail>("get_item", { id });
+    const data = detail.fileData ?? detail.imageData;
+    if (!data || !detail.source.filename)
+      throw new Error("The original file is no longer available.");
+    await downloadOriginal(bridge!, data, detail.source.filename);
+  },
   draft: (
     source: NonNullable<SaveInput["source"]>,
   ): Promise<{ draft: DraftResult }> =>

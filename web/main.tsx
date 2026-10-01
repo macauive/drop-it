@@ -1894,20 +1894,36 @@ function Detail({
                 </div>
               )}
               {detail.source.hasFile &&
-                (!embedded || detail.fileData || detail.imageData) && (
+                (!embedded || detail.fileData || detail.imageData) &&
+                (embedded ? (
+                  <button
+                    className="source-link"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      setError("");
+                      try {
+                        await client.download(id);
+                      } catch (error) {
+                        setError(message(error));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    <ArrowDownToLine size={15} />
+                    <span>{detail.source.filename ?? "Download original"}</span>
+                  </button>
+                ) : (
                   <a
                     className="source-link"
-                    href={
-                      embedded
-                        ? (detail.fileData ?? detail.imageData)
-                        : `/api/sources/${detail.source.id}/file`
-                    }
+                    href={`/api/sources/${detail.source.id}/file`}
                     download={detail.source.filename ?? "source"}
                   >
                     <ArrowDownToLine size={15} />
                     <span>{detail.source.filename ?? "Download original"}</span>
                   </a>
-                )}
+                ))}
               {!detail.source.url &&
                 !detail.source.hasFile &&
                 !detail.source.originalText && (

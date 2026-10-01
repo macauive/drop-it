@@ -519,6 +519,10 @@ test("MCP SDK client can discover tools, authenticate, and enforce read-only sco
     uri: "ui://drop-it/library-v1.html",
   });
   assert.equal(resource.contents[0].mimeType, "text/html;profile=mcp-app");
+  assert.deepEqual(resource.contents[0]._meta?.ui, {
+    prefersBorder: true,
+    csp: { connectDomains: [], resourceDomains: [] },
+  });
   await client.close();
 });
 

@@ -38,6 +38,7 @@ export function createMcpServer(
         _meta: {
           ui: {
             prefersBorder: true,
+            ...(!config.local ? { domain: config.origin } : {}),
             csp: { connectDomains: [], resourceDomains: [] },
           },
           "openai/widgetDescription":
