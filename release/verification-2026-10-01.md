@@ -166,3 +166,12 @@ OAuth scopes, annotations, or retention behavior. The widget uses resource
 `ui://drop-it/library-v4.html`; refresh the installed plugin's tools and reopen
 old widgets after deployment. Review scenarios and the draft ZIP use the new
 identifiers. No duplicate legacy tools are exposed.
+
+All 145 tests, lint, typecheck, and build passed after the rename. Render deployed
+`3f5158d` from `main`, and `/ready` returned `{"ok":true}`. The revised draft ZIP
+was uploaded without submission; metadata checks and the new MCP scan report
+no issues. The portal lists all nine tools with the new identifiers. After
+refreshing the installed developer plugin, a fresh ChatGPT `get_drop` call
+displayed the existing synthetic screenshot and its original image. Previously
+rendered widgets referencing an old resource can show "MCP Resource not found";
+reopen the drop through a fresh tool call to use the current widget.
