@@ -9,6 +9,7 @@ import React, {
 import { createRoot } from "react-dom/client";
 import { DropPreview } from "./drop-preview.js";
 import { poolTone } from "./pool-colors.js";
+import { LayoutSwitcher, readLayout, rememberLayout } from "./library-layout.js";
 import {
   ArrowDownToLine,
   Droplet,
@@ -542,6 +543,7 @@ function Consent({ id }: { id: string }) {
 
 function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
   const [searchDraft, setSearchDraft] = useState("");
+  const [layout, setLayout] = useState(readLayout);
   const [query, setQuery] = useState(""),
     [view, setView] = useState<(typeof views)[number]>("All drops"),
     [category, setCategory] = useState("");
@@ -717,7 +719,10 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                 <span className="heading-count">{data.total}</span>
               </h1>
             </div>
-            <span className="saved-caption">Good things, kept.</span>
+            <div className="heading-actions">
+              <span className="saved-caption">Good things, kept.</span>
+              <LayoutSwitcher value={layout} onChange={(value) => { setLayout(value); rememberLayout(value); }} />
+            </div>
           </div>
           {view === "Trash" && (
             <p className="trash-notice">
@@ -818,41 +823,43 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
             </div>
           ) : error ? null : data.items.length ? (
             <>
-              <div className="list-labels">
+              {layout === "standard" && <div className="list-labels">
                 <span>DROP</span>
                 <span>{view === "Trash" ? "DELETES" : "CREATED"}</span>
                 <span>{view === "Trash" ? "" : "SAVED"}</span>
-              </div>
-              <div className="item-list">
+              </div>}
+              <div className={`item-list layout-${layout}`}>
                 {data.items.map((item) => (
                   <div key={item.id} className="item-row">
                     <button
                       className="item-open"
                       onClick={() => setSelected(item.id)}
                     >
-                      <DropPreview
+                      {layout !== "compact" && <DropPreview
                         sourceId={item.sourceId}
                         hasImage={item.hasImage}
                         hasLink={Boolean(item.sourceUrl)}
                         enabled={!embedded}
-                      />
+                        size={layout === "icon" ? "grid" : "list"}
+                      />}
                       <span className="item-copy">
                         <span className="item-title">{item.title}</span>
-                        <span className="item-summary">
+                        {layout === "standard" && <span className="item-summary">
                           {item.summary || item.notes || "No summary"}
-                        </span>
+                        </span>}
                         <span className="tags">
                           <span
                             className={`category-tag ${poolTone(item.category, data.categories)}`}
+                            title={item.category}
                           >
                             {item.category}
                           </span>
-                          {item.tags.slice(0, 3).map((tag) => (
+                          {layout === "standard" && item.tags.slice(0, 3).map((tag) => (
                             <span key={tag}>#{tag}</span>
                           ))}
                         </span>
                       </span>
-                      <span
+                      {layout === "standard" && <span
                         className="item-date"
                         title={
                           item.deleteAfter
@@ -861,8 +868,8 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                         }
                       >
                         {date(item.deleteAfter ?? item.createdAt)}
-                      </span>
-                      <ArrowUpRight className="row-arrow" size={16} />
+                      </span>}
+                      {layout === "standard" && <ArrowUpRight className="row-arrow" size={16} />}
                     </button>
                     {!item.trashedAt && (
                       <SaveRibbon

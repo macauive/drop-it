@@ -6,11 +6,13 @@ export function DropPreview({
   hasImage,
   hasLink,
   enabled,
+  size = "list",
 }: {
   sourceId: string;
   hasImage: boolean;
   hasLink: boolean;
   enabled: boolean;
+  size?: "list" | "grid";
 }) {
   const [failedSource, setFailedSource] = useState("");
   const preview = enabled && hasImage && failedSource !== sourceId;
@@ -19,10 +21,10 @@ export function DropPreview({
       {preview ? (
         <img
           className="drop-thumbnail"
-          src={`/api/sources/${encodeURIComponent(sourceId)}/thumbnail`}
+          src={`/api/sources/${encodeURIComponent(sourceId)}/thumbnail${size === "grid" ? "?size=grid" : ""}`}
           alt=""
-          width={72}
-          height={56}
+          width={size === "grid" ? 320 : 72}
+          height={size === "grid" ? 240 : 56}
           loading="lazy"
           decoding="async"
           onError={() => setFailedSource(sourceId)}

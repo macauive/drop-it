@@ -406,11 +406,12 @@ export function createApp(
     ),
   );
   app.get("/api/sources/:id/thumbnail", async (req, res) => {
+    const { size } = z.object({ size: z.enum(["grid"]).optional() }).strict().parse(req.query);
     const image = await library.image(
       res.locals.owner,
       idSchema.parse(req.params.id),
     );
-    res.type("image/webp").send(await thumbnail(image.bytes));
+    res.type("image/webp").send(await thumbnail(image.bytes, size));
   });
   app.post("/api/draft", async (req, res) =>
     res.json(await library.draft(res.locals.owner, req.body)),
