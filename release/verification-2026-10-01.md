@@ -59,11 +59,11 @@ web service now use `main`, and post-deployment health and ChatGPT reads passed.
 - GitHub Actions run 36821767310 never started: GitHub reports failed account
   payments or a spending limit. No billing or security setting was changed.
   The user deferred CI work; leave its settings and billing alone.
-- ChatGPT showed "CSP off" during these developer-mode tests; widget behavior
-  under enforced CSP still needs verification before public submission.
-- The embedded download-link click did not emit a browser-automation download
-  event. Original-image display and exact byte preservation were verified
-  independently; do not claim the download interaction was verified.
+- The in-app browser canceled an ordinary standalone download-link click after
+  emitting `Page.downloadWillBegin` (`Page.downloadProgress` reported canceled,
+  zero bytes). Its supported download helper saved the authenticated original
+  successfully: 41,907 bytes and SHA-256 equal to the image displayed in ChatGPT.
+  A normal-browser download-click check remains outstanding.
 
 The synthetic rainwater-sensor drop remains restored and bookmarked, and the
 synthetic screenshot drop remains unbookmarked, for inspection. The tests did
@@ -71,6 +71,49 @@ not modify pre-existing user drops.
 
 ## Next release gate
 
-The branch transition is complete. Broader public-launch checks
-(review account, submission walkthrough, enforced CSP, and backup restore)
-remain separate from the branch transition.
+The branch transition is complete. Remaining public-launch checks are the
+dedicated reviewer account and its review scenarios, walkthrough recording,
+normal-browser download click, physical mobile verification, and the portal's
+MCP connection/review information. No public submission or publication occurred.
+
+## CSP, downloads, backup restoration, and submission draft
+
+- Enabled ChatGPT's **Enforce CSP for custom apps** setting and left it enabled.
+  The widget and original synthetic screenshot render under enforcement.
+- The host iframe blocks direct download links and this ChatGPT host does not
+  advertise the standard MCP download capability. Added feature detection and
+  a host `openLink` fallback to the same drop on the authenticated website.
+  Live verification opened the correct screenshot detail without changing it.
+  The standalone download-helper result and click limitation are recorded above.
+- Production widgets declare the canonical UI domain and use versioned resource
+  `ui://drop-it/library-v3.html` to invalidate cached widgets. CSP resource and
+  connection allowlists remain empty; no broad external allowance was added.
+- `npm run check` passed lint, TypeScript, build, and all **145 tests**, including
+  download-capability/fallback validation and draft-package regression tests.
+  GitHub CI settings and billing were left alone.
+- Render reports `49a7818` from `main` as its live deployment. The public `/ready`
+  returned `{"ok":true}` after deployment. The live privacy page reports backup
+  retention of up to seven days, matching logical-export retention rather than
+  the shorter three-day point-in-time recovery window.
+- Restored Render's October 1 16:05 UTC logical export into disposable local
+  PostgreSQL 16 with no TCP listener. Application-level reads preserved both
+  synthetic drops, revision/bookmark/note/source state, and the original PNG.
+  All restored attachment hashes matched and no attachments were missing.
+  The temporary database was stopped and removed; production was unchanged.
+  This verifies logical-export restoration, not a managed PITR cutover.
+- Created and uploaded `dist/drop-it-plugin-draft.zip` using the public metadata
+  and the three-file allowlist. Portal metadata checks report **No Issues**, and
+  domain verification passed. The draft is neither submitted nor published.
+- Prepared the interactive Render account command for username `dropit-reviewer`
+  at the hidden password prompt. Account creation awaits direct user entry.
+  The owner's recovery-code form was also handed off for direct user entry.
+  Neither password nor recovery code belongs in chat, source, or the package.
+
+### Reviewer handoff
+
+After the reviewer account is created, use only its synthetic sample library
+for the five positive and three negative cases in `release/review-cases.json`.
+Record sign-in, text save/search, screenshot transcription and original retrieval,
+edits, and Trash/restore. Verify desktop and mobile behavior, supply the recording
+URL, build the full package, finish the portal's MCP connection and review fields,
+and resolve any scan findings before requesting final submission approval.
