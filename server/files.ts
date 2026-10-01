@@ -3,6 +3,13 @@ import { fileTypes, maxFileBytes } from "../shared/files.js";
 import { AppError } from "./errors.js";
 import type { Library } from "./library.js";
 
+// Exact hosts observed in ChatGPT file delivery. Never allow all Azure Blob
+// accounts or arbitrary URLs supplied by a model or an uploaded document.
+const chatGPTFileHosts = new Set([
+  "files.oaiusercontent.com",
+  "oaisdmntprcentralus.blob.core.windows.net",
+]);
+
 export async function importChatGPTFile(
   library: Library,
   owner: string,
@@ -13,7 +20,7 @@ export async function importChatGPTFile(
   // Never fetch arbitrary user URLs or follow redirects with signed file credentials.
   if (
     url.protocol !== "https:" ||
-    url.hostname !== "files.oaiusercontent.com" ||
+    !chatGPTFileHosts.has(url.hostname) ||
     url.port ||
     url.username ||
     url.password

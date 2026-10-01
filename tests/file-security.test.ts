@@ -83,6 +83,12 @@ test("file-import SSRF defenses reject host, scheme, credential and port bypasse
     "https://[::1]/file",
     "https://2130706433/file",
     "https://169.254.169.254/latest/meta-data/",
+    "https://attacker.blob.core.windows.net/file",
+    "https://oaisdmntprcentralus.blob.core.windows.net.evil.example/file",
+    "https://oaisdmntprcentralus.blob.core.windows.net./file",
+    "https://oaisdmntprcentralus.blob.core.windows.net:8443/file",
+    "http://oaisdmntprcentralus.blob.core.windows.net/file",
+    "https://user:pass@oaisdmntprcentralus.blob.core.windows.net/file",
     "file:///private/synthetic.txt",
     "data:text/plain,synthetic",
   ]) {
@@ -92,6 +98,24 @@ test("file-import SSRF defenses reject host, scheme, credential and port bypasse
     );
   }
   assert.equal(request.mock.callCount(), 0);
+});
+
+test("the observed ChatGPT Azure host preserves original bytes without forwarding credentials or following redirects", async (t) => {
+  const bytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "white" } }).png().toBuffer();
+  const download_url = "https://oaisdmntprcentralus.blob.core.windows.net/synthetic-file";
+  t.mock.method(globalThis, "fetch", async (url: Parameters<typeof fetch>[0], options?: RequestInit) => {
+    assert.equal(String(url), download_url);
+    assert.equal(options?.redirect, "error");
+    assert.equal(options?.headers, undefined);
+    return new Response(bytes, { headers: { "content-type": "image/png" } });
+  });
+  await importChatGPTFile(library(async (receivedOwner, received, mime, name) => {
+    assert.equal(receivedOwner, owner);
+    assert.deepEqual(received, bytes);
+    const validated = await validateUpload(received, mime, name);
+    assert.equal(validated.mime, "image/png");
+    return { attachmentId: randomUUID(), originalText: validated.originalText };
+  }), owner, { download_url, file_id: "synthetic-file" });
 });
 
 test("rejected download diagnostics expose only the hostname, never signed URLs or credentials", async () => {
