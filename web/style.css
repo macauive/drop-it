@@ -413,7 +413,7 @@ p {
 .list-labels {
   display: grid;
   grid-template-columns: 1fr 83px 40px;
-  padding: 0 5px 12px 58px;
+  padding: 0 5px 12px 92px;
   font-size: 9px;
   font-weight: 600;
   color: #a0a6af;
@@ -468,6 +468,23 @@ p {
   line-height: 1.6;
   margin: 16px 0 24px;
 }
+.drop-preview {
+  width: 72px;
+  height: 56px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.drop-thumbnail {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+}
 .item-icon {
   width: 40px;
   height: 46px;
@@ -476,8 +493,8 @@ p {
   justify-content: center;
   flex: none;
   border-radius: 6px;
-  background: #edf2f5;
-  color: #627f93;
+  background: #e8f1fd;
+  color: #1764c0;
 }
 .item-copy {
   display: flex;
@@ -528,29 +545,73 @@ p {
   color: #628099;
   width: max-content;
 }
-.category-tone-0 {
+.category-tag.category-tone-0 {
   background: #ecf2fa;
-  color: #557aaf;
+  color: #386394;
 }
-.category-tone-1 {
+.category-tag.category-tone-1 {
   background: #e8f3ed;
-  color: #4d8966;
+  color: #326d4b;
 }
-.category-tone-2 {
+.category-tag.category-tone-2 {
   background: #fbf0e4;
-  color: #b5894e;
+  color: #805c26;
 }
-.category-tone-3 {
+.category-tag.category-tone-3 {
   background: #f8e9eb;
-  color: #b46a78;
+  color: #914858;
 }
-.category-tone-4 {
-  background: #f0edf7;
-  color: #8270a5;
+.category-tag.category-tone-4 {
+  background: #e3f4ef;
+  color: #206951;
 }
-.category-tone-5 {
-  background: #eef0f3;
-  color: #7f8996;
+.category-tag.category-tone-5 {
+  background: #e4f4fa;
+  color: #20667e;
+}
+.category-tag.category-tone-6 {
+  background: #fcebe2;
+  color: #934922;
+}
+.category-tag.category-tone-7 {
+  background: #edf0fc;
+  color: #3a549b;
+}
+html[data-theme="dark"] .item-icon {
+  background: #213d60;
+  color: #8fc2ff;
+}
+html[data-theme="dark"] .category-tag.category-tone-0 {
+  background: #263e5e;
+  color: #a8cfff;
+}
+html[data-theme="dark"] .category-tag.category-tone-1 {
+  background: #284537;
+  color: #a5d8b6;
+}
+html[data-theme="dark"] .category-tag.category-tone-2 {
+  background: #4b3e28;
+  color: #efd198;
+}
+html[data-theme="dark"] .category-tag.category-tone-3 {
+  background: #4f303a;
+  color: #f3b5c2;
+}
+html[data-theme="dark"] .category-tag.category-tone-4 {
+  background: #23453e;
+  color: #98deca;
+}
+html[data-theme="dark"] .category-tag.category-tone-5 {
+  background: #254450;
+  color: #a0dbe9;
+}
+html[data-theme="dark"] .category-tag.category-tone-6 {
+  background: #50392b;
+  color: #f1bd99;
+}
+html[data-theme="dark"] .category-tag.category-tone-7 {
+  background: #303c5a;
+  color: #b5c8ff;
 }
 .item-date {
   font-size: 11px;
@@ -1205,6 +1266,11 @@ p {
   .item-copy {
     grid-column: 2;
     grid-row: 1;
+  }
+  .drop-preview {
+    width: 56px;
+    height: 48px;
+    align-self: start;
   }
   .item-summary {
     font-size: 11px;

@@ -7,6 +7,8 @@ import React, {
   useId,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { DropPreview } from "./drop-preview.js";
+import { poolTone } from "./pool-colors.js";
 import {
   ArrowDownToLine,
   Droplet,
@@ -17,7 +19,6 @@ import {
   ChevronDown,
   RotateCcw,
   FileText,
-  Image as ImageIcon,
   Inbox,
   Link as LinkIcon,
   LoaderCircle,
@@ -60,12 +61,6 @@ import "./style.css";
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong.";
-const categoryTone = (category: string) => {
-  let hash = 0;
-  for (const letter of category.toLowerCase())
-    hash = (hash * 31 + letter.charCodeAt(0)) >>> 0;
-  return `category-tone-${hash % 6}`;
-};
 function CategoryField({
   value,
   onChange,
@@ -835,17 +830,12 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                       className="item-open"
                       onClick={() => setSelected(item.id)}
                     >
-                      <span
-                        className={`item-icon ${categoryTone(item.category)}`}
-                      >
-                        {item.hasImage ? (
-                          <ImageIcon size={21} />
-                        ) : item.sourceUrl ? (
-                          <LinkIcon size={21} />
-                        ) : (
-                          <FileText size={21} />
-                        )}
-                      </span>
+                      <DropPreview
+                        sourceId={item.sourceId}
+                        hasImage={item.hasImage}
+                        hasLink={Boolean(item.sourceUrl)}
+                        enabled={!embedded}
+                      />
                       <span className="item-copy">
                         <span className="item-title">{item.title}</span>
                         <span className="item-summary">
@@ -853,7 +843,7 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                         </span>
                         <span className="tags">
                           <span
-                            className={`category-tag ${categoryTone(item.category)}`}
+                            className={`category-tag ${poolTone(item.category, data.categories)}`}
                           >
                             {item.category}
                           </span>
@@ -1762,7 +1752,7 @@ function Detail({
           <>
             <div className="detail-meta">
               <span
-                className={`category-tag ${categoryTone(detail.item.category)}`}
+                className={`category-tag ${poolTone(detail.item.category, categories)}`}
               >
                 {detail.item.category}
               </span>

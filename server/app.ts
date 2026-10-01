@@ -28,6 +28,7 @@ import {
 } from "../shared/schema.js";
 import { OpenAIProvider, type AIProvider } from "./ai.js";
 import { addPublicPages } from "./public-pages.js";
+import { thumbnail } from "./thumbnails.js";
 
 export function createApp(
   db: Database,
@@ -404,6 +405,13 @@ export function createApp(
       await library.search(res.locals.owner, searchSchema.parse(req.body)),
     ),
   );
+  app.get("/api/sources/:id/thumbnail", async (req, res) => {
+    const image = await library.image(
+      res.locals.owner,
+      idSchema.parse(req.params.id),
+    );
+    res.type("image/webp").send(await thumbnail(image.bytes));
+  });
   app.post("/api/draft", async (req, res) =>
     res.json(await library.draft(res.locals.owner, req.body)),
   );
