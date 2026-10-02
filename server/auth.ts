@@ -297,7 +297,7 @@ export class Auth implements OAuthServerProvider {
       return this.issueSession(tx, owner, userAgent);
     });
   }
-  private async issueSession(tx: Queryable, owner: string, userAgent?: string) {
+  async issueSession(tx: Queryable, owner: string, userAgent?: string) {
     const token = secret();
     await tx.query(
       "DELETE FROM sessions WHERE owner=$1 AND expires_at<=clock_timestamp()",
@@ -379,11 +379,19 @@ export class Auth implements OAuthServerProvider {
     await this.activeSession(tx, snapshot.id, token);
     return current;
   }
+  async confirmPassword(owner: string, token: string, password: string) {
+    const snapshot = await this.reauthenticate(owner, token, password);
+    return this.db.transaction(
+      async (tx) => (await this.recheck(tx, snapshot, token)).auth_version,
+    );
+  }
   private async invalidateCredentials(
     tx: Queryable,
     owner: string,
     clearRecovery: boolean,
   ) {
+    await tx.query("DELETE FROM chatgpt_connections WHERE owner=$1", [owner]);
+    await tx.query("DELETE FROM chatgpt_pending WHERE owner=$1", [owner]);
     await tx.query("DELETE FROM sessions WHERE owner=$1", [owner]);
     await tx.query("DELETE FROM oauth_codes WHERE owner=$1", [owner]);
     await tx.query("DELETE FROM oauth_tokens WHERE owner=$1", [owner]);

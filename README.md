@@ -214,3 +214,69 @@ The package command creates `dist/drop-it-plugin.zip` from an explicit three-fil
 `release/review-cases.json` contains five positive and three negative review scenarios, not completed test results. The [ChatGPT checklist](release/chatgpt-verification-checklist.md) adds current widget, privacy and reliability cases. Run authorized checks using the dedicated reviewer account, preserving its existing samples and keeping the owner's separate connection intact. Use synthetic content for cross-conversation retrieval, screenshot transfer, edits and Trash/restore. Physical desktop/mobile interaction, the walkthrough, current publisher/domain and tool-contract verification, and a fresh scan for the intended release remain separate evidence. Keep the app **unsubmitted and unpublished**; preparing or uploading a package is not permission to submit. Submission requires an explicit later decision, and publication requires approval. Do not use the real owner's private library for review.
 
 Official references: [OpenAI submission](https://developers.openai.com/plugins/deploy/submission), [Render Blueprint](https://render.com/docs/blueprint-spec), [Render pricing](https://render.com/pricing), [Render backups](https://render.com/docs/postgresql-backups).
+
+## Sign in with ChatGPT (approval-gated)
+
+The optional integration is **disabled by default**. It is implemented for an
+OpenAI-provisioned commercial OAuth client; it does not use the open-source
+`dynamic_agent_client` registration flow. Request access at
+[OpenAI's client application page](https://developers.openai.com/siwc/request-client-id).
+Sign-in approval and permission to use a customer's ChatGPT plan are separate.
+The hosted plan grant must be confirmed by OpenAI before enabling it; mocked
+verification does not establish commercial account eligibility or live access.
+
+After approval, register the exact `PUBLIC_URL/auth/chatgpt/callback` URL for each
+environment. Configure `CHATGPT_ENABLED=true`, the issued `CHATGPT_CLIENT_ID`,
+`CHATGPT_TOKEN_AUTH_METHOD` (`none` or `client_secret_basic`), and the secret for
+confidential clients. Store a separate random 32-byte encryption key as 64 hex
+characters in `CHATGPT_ENCRYPTION_KEY`. Put real values only in the deployment's
+secret manager or ignored local configuration. Keep this key across restarts;
+losing or replacing it requires users to reconnect. Credentials and pending
+PKCE transactions are encrypted with AES-256-GCM and bound to their account or
+transaction. Provider endpoints are discovered from OpenAI and restricted to
+`https://auth.openai.com`; signed ID tokens are validated with `jose`.
+
+Existing users link ChatGPT in Settings after entering their current Drop It
+password. They can then use **Continue with ChatGPT** on the sign-in page.
+Unlinked users first register or obtain a Drop It account through the existing
+signup policy; ChatGPT does not bypass closed registration, create a second
+library, or merge accounts by email. Keep a Drop It password and recovery code
+for account controls. Ordinary browser logout retains the link. Password change,
+recovery and sign-out-everywhere remove local ChatGPT links and tokens; users
+can additionally revoke remote permission in ChatGPT Settings. Account deletion
+cascades through local identity, token and pending-transaction records. Disconnect
+attempts remote refresh-token revocation and reports when it cannot confirm it.
+Provider-side permission removal cannot erase requests already in flight.
+
+Only after OpenAI separately approves the hosted plan integration, configure
+`CHATGPT_PLAN_ENABLED=true` and `CHATGPT_PLAN_SCOPES` with the **exact approved
+scope set**, including `offline_access` and `resource.invoke` plus the provisioned
+plan permission. Do not assume the OSS direct scope is approved for this hosted
+client. The adapter uses the public model catalog and streaming Responses API;
+validate this contract against the commercial grant during activation. It selects
+the first visible model in the account's catalog. A live acceptance test must
+confirm that this model accepts strict JSON-schema output and image/PDF input.
+
+With plan mode enabled, all accounts must connect their own plan to draft, both
+on the website and via MCP. No draft or embedding request falls back to the site
+API key. Search uses keyword matching; this integration does not claim embeddings
+are covered by ChatGPT plans. Accounts that have selected plan usage remain
+protected from site-key fallback after disconnection or a configuration rollback.
+Reconnect to restore drafting. Identity-only mode preserves existing server-funded
+AI for accounts that have never selected plan usage. Manual capture remains
+available in every mode. Usage and limits are managed in
+[ChatGPT Settings](https://chatgpt.com/settings/usage).
+
+Before activation, test with the issued client: exact callback matching, linking
+and sign-in, denied consent, granted scopes, text/image/PDF drafting, refresh,
+quota exhaustion, disconnect and existing MCP consent continuation. Check provider
+and reverse-proxy logs redact `/auth/chatgpt/callback` query strings; authorization
+codes must not be retained in request logs. The app redirects callbacks to a clean
+URL, sends `Referrer-Policy: no-referrer`, and never returns OpenAI tokens to the
+browser. This feature does not submit the plugin or change production settings.
+
+Run `node --import tsx tests/postgres-chatgpt.ts` for the opt-in PostgreSQL
+checks before release. It uses a disposable local cluster and mocked OpenAI
+responses to verify concurrent refresh across two pools, durable rotated tokens,
+disconnect and sign-out races, and invalid refresh without site-key fallback.
+It does not load environment files or connect to production.

@@ -31,6 +31,7 @@ const publicAuthPaths = new Set([
   "/api/setup",
   "/api/register",
   "/api/recover",
+  "/api/chatgpt/start",
 ]);
 let browserAuthVersion = 0;
 

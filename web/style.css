@@ -1737,3 +1737,12 @@ html[data-theme="dark"] .notice {
     overflow-wrap: anywhere;
   }
 }
+
+.chatgpt-settings label {
+  display: block;
+  margin-bottom: 12px;
+}
+.chatgpt-usage-link {
+  display: block;
+  margin-top: 12px;
+}

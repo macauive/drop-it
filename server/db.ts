@@ -303,4 +303,26 @@ export async function migrate(db: Database) {
       created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(owner,request_id))`);
     await tx.query("INSERT INTO schema_migrations(version) VALUES(9)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=10"))
+        .rows.length
+    )
+      return;
+    await tx.query(
+      "ALTER TABLE users ADD COLUMN chatgpt_plan_selected boolean NOT NULL DEFAULT false",
+    );
+    await tx.query(`CREATE TABLE chatgpt_connections (
+      owner uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      issuer text NOT NULL, client_id text NOT NULL, subject text NOT NULL,
+      credentials text, expires_at timestamptz,
+      UNIQUE(issuer,client_id,subject)
+    )`);
+    await tx.query(`CREATE TABLE chatgpt_pending (
+      hash text PRIMARY KEY, browser_hash text NOT NULL, data text NOT NULL,
+      owner uuid REFERENCES users(id) ON DELETE CASCADE,
+      expires_at timestamptz NOT NULL DEFAULT now()+interval '10 minutes'
+    )`);
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(10)");
+  });
 }

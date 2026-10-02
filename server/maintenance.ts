@@ -30,6 +30,7 @@ export async function cleanupExpired(db: Database) {
     });
   }
   await db.transaction(async (tx) => {
+    await tx.query("DELETE FROM chatgpt_pending WHERE expires_at < now()");
     await tx.query("DELETE FROM sessions WHERE expires_at < now()");
     await tx.query("DELETE FROM oauth_pending WHERE expires_at < now()");
     await tx.query("DELETE FROM oauth_codes WHERE expires_at < now()");

@@ -4,6 +4,7 @@ import { publicSiteSchema } from "./public-pages.js";
 type LoadedConfig = ReturnType<typeof loadConfig>;
 export type Config = Omit<
   LoadedConfig,
+  | "chatgpt"
   | "publicAccounts"
   | "signupEnabled"
   | "trustProxy"
@@ -14,6 +15,7 @@ export type Config = Omit<
   Partial<
     Pick<
       LoadedConfig,
+      | "chatgpt"
       | "publicAccounts"
       | "signupEnabled"
       | "trustProxy"
@@ -96,6 +98,7 @@ export function loadConfig() {
       "Public signup requires publisher, support and backup retention settings.",
     );
   return {
+    chatgpt: loadChatGPTConfig(),
     port,
     origin: publicUrl.origin,
     local,
@@ -169,4 +172,53 @@ export function loadConfig() {
         .parse(process.env.MAX_AI_STARTS_PER_MINUTE ?? 120),
     },
   };
+}
+
+export type ChatGPTConfig = {
+  clientId: string;
+  clientSecret?: string;
+  authMethod: "none" | "client_secret_basic";
+  encryptionKey: string;
+  planScopes: string;
+};
+function loadChatGPTConfig(): ChatGPTConfig | undefined {
+  if (process.env.CHATGPT_ENABLED !== "true") return undefined;
+  const clientId = z
+    .string()
+    .regex(/^oaiapp_[A-Za-z0-9_-]{1,180}$/)
+    .parse(process.env.CHATGPT_CLIENT_ID);
+  const encryptionKey = z
+    .string()
+    .regex(/^[a-f0-9]{64}$/i)
+    .parse(process.env.CHATGPT_ENCRYPTION_KEY);
+  const authMethod = z
+    .enum(["none", "client_secret_basic"])
+    .parse(process.env.CHATGPT_TOKEN_AUTH_METHOD ?? "none");
+  const clientSecret =
+    authMethod === "client_secret_basic"
+      ? z.string().min(1).max(4096).parse(process.env.CHATGPT_CLIENT_SECRET)
+      : undefined;
+  // Commercial grants must be provisioned by OpenAI. Never substitute the
+  // dynamic OSS client, invent a scope, or enable plan usage from identity alone.
+  const planEnabled =
+    z
+      .enum(["true", "false"])
+      .parse(process.env.CHATGPT_PLAN_ENABLED ?? "false") === "true";
+  const planScopes = planEnabled
+    ? z
+        .string()
+        .min(1)
+        .max(500)
+        .regex(/^[a-zA-Z0-9._:-]+(?: [a-zA-Z0-9._:-]+)*$/)
+        .parse(process.env.CHATGPT_PLAN_SCOPES)
+    : "";
+  if (
+    planEnabled &&
+    (!planScopes.split(" ").includes("offline_access") ||
+      !planScopes.split(" ").includes("resource.invoke"))
+  )
+    throw new Error(
+      "ChatGPT plan usage requires the approved offline_access and resource.invoke scopes.",
+    );
+  return { clientId, clientSecret, authMethod, encryptionKey, planScopes };
 }

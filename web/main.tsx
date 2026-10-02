@@ -9,8 +9,16 @@ import React, {
 import { createRoot } from "react-dom/client";
 import { DropPreview } from "./drop-preview.js";
 import { poolTone } from "./pool-colors.js";
-import { LayoutSwitcher, readLayout, rememberLayout } from "./library-layout.js";
-import { SidebarToggle, readSidebarCollapsed, rememberSidebarCollapsed } from "./sidebar.js";
+import {
+  LayoutSwitcher,
+  readLayout,
+  rememberLayout,
+} from "./library-layout.js";
+import {
+  SidebarToggle,
+  readSidebarCollapsed,
+  rememberSidebarCollapsed,
+} from "./sidebar.js";
 import {
   ArrowDownToLine,
   Droplet,
@@ -186,6 +194,7 @@ function App() {
     localSetup: boolean;
     publicAccounts?: boolean;
     signupEnabled?: boolean;
+    chatgptEnabled?: boolean;
   } | null>(
     embedded
       ? { authenticated: true, needsSetup: false, localSetup: false }
@@ -255,6 +264,7 @@ function App() {
         local={session.localSetup}
         publicAccounts={session.publicAccounts ?? false}
         signupEnabled={session.signupEnabled ?? false}
+        chatgptEnabled={session.chatgptEnabled ?? false}
         notice={authNotice}
         onSuccess={() => {
           setAuthNotice("");
@@ -281,6 +291,7 @@ function Login({
   local,
   publicAccounts,
   signupEnabled,
+  chatgptEnabled,
   notice,
   onSuccess,
 }: {
@@ -288,6 +299,7 @@ function Login({
   local: boolean;
   publicAccounts: boolean;
   signupEnabled: boolean;
+  chatgptEnabled: boolean;
   notice: string;
   onSuccess: () => void;
 }) {
@@ -329,6 +341,45 @@ function Login({
               <p className="settings-notice" role="status">
                 {recoveryNotice || notice}
               </p>
+            )}
+            {new URLSearchParams(location.search).get("chatgpt") ===
+              "error" && (
+              <Alert text="ChatGPT sign-in could not be completed. Sign in with your Drop It password and connect ChatGPT in Settings, or try again." />
+            )}
+            {chatgptEnabled && !creating && (
+              <>
+                <button
+                  className="button"
+                  disabled={busy}
+                  onClick={async () => {
+                    if (loginLock.current) return;
+                    loginLock.current = true;
+                    setBusy(true);
+                    setError("");
+                    try {
+                      const authorize = new URLSearchParams(
+                        location.search,
+                      ).get("authorize");
+                      const result = await api<{ url: string }>(
+                        "/api/chatgpt/start",
+                        "POST",
+                        { ...(authorize ? { authorize } : {}) },
+                      );
+                      location.assign(result.url);
+                    } catch (e) {
+                      setError(message(e));
+                      loginLock.current = false;
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Continue with ChatGPT
+                </button>
+                <p className="muted">
+                  First time? Sign in with your Drop It password, then connect
+                  ChatGPT in Settings.
+                </p>
+              </>
             )}
             {setup && !local ? (
               <Alert text="Open Drop It locally to create the owner account." />
@@ -631,7 +682,9 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
   const [hasRequestedSearch, setHasRequestedSearch] = useState(!embedded);
   const [offset, setOffset] = useState(0),
     [tick, setTick] = useState(0),
-    [settingsOpen, setSettingsOpen] = useState(false);
+    [settingsOpen, setSettingsOpen] = useState(
+      new URLSearchParams(location.search).has("chatgpt"),
+    );
   const [security, setSecurity] = useState<SecurityInfo | null>(null),
     [recoveryDeferred, setRecoveryDeferred] = useState(false);
   const [securityNotice, setSecurityNotice] = useState("");
@@ -1153,11 +1206,13 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
             </div>
           ) : error ? null : data.items.length ? (
             <>
-              {layout === "standard" && <div className="list-labels">
-                <span>DROP</span>
-                <span>{view === "Trash" ? "DELETES" : "CREATED"}</span>
-                <span>{view === "Trash" ? "" : "SAVED"}</span>
-              </div>}
+              {layout === "standard" && (
+                <div className="list-labels">
+                  <span>DROP</span>
+                  <span>{view === "Trash" ? "DELETES" : "CREATED"}</span>
+                  <span>{view === "Trash" ? "" : "SAVED"}</span>
+                </div>
+              )}
               <div className={`item-list layout-${layout}`}>
                 {data.items.map((item) => (
                   <div key={item.id} className="item-row">
@@ -1168,18 +1223,22 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                         setSelected(item.id);
                       }}
                     >
-                      {layout !== "compact" && <DropPreview
-                        sourceId={item.sourceId}
-                        hasImage={item.hasImage}
-                        hasLink={Boolean(item.sourceUrl)}
-                        enabled={!embedded}
-                        size={layout === "icon" ? "grid" : "list"}
-                      />}
+                      {layout !== "compact" && (
+                        <DropPreview
+                          sourceId={item.sourceId}
+                          hasImage={item.hasImage}
+                          hasLink={Boolean(item.sourceUrl)}
+                          enabled={!embedded}
+                          size={layout === "icon" ? "grid" : "list"}
+                        />
+                      )}
                       <span className="item-copy">
                         <span className="item-title">{item.title}</span>
-                        {layout === "standard" && <span className="item-summary">
-                          {item.summary || item.notes || "No summary"}
-                        </span>}
+                        {layout === "standard" && (
+                          <span className="item-summary">
+                            {item.summary || item.notes || "No summary"}
+                          </span>
+                        )}
                         {layout === "standard" && query && item.matchType && (
                           <span className="match-evidence">
                             {item.matchType === "semantic"
@@ -1197,22 +1256,27 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                           >
                             {item.category}
                           </span>
-                          {layout === "standard" && item.tags.slice(0, 3).map((tag) => (
-                            <span key={tag}>#{tag}</span>
-                          ))}
+                          {layout === "standard" &&
+                            item.tags
+                              .slice(0, 3)
+                              .map((tag) => <span key={tag}>#{tag}</span>)}
                         </span>
                       </span>
-                      {layout === "standard" && <span
-                        className="item-date"
-                        title={
-                          item.deleteAfter
-                            ? deletionDate(item.deleteAfter)
-                            : undefined
-                        }
-                      >
-                        {date(item.deleteAfter ?? item.createdAt)}
-                      </span>}
-                      {layout === "standard" && <ArrowUpRight className="row-arrow" size={16} />}
+                      {layout === "standard" && (
+                        <span
+                          className="item-date"
+                          title={
+                            item.deleteAfter
+                              ? deletionDate(item.deleteAfter)
+                              : undefined
+                          }
+                        >
+                          {date(item.deleteAfter ?? item.createdAt)}
+                        </span>
+                      )}
+                      {layout === "standard" && (
+                        <ArrowUpRight className="row-arrow" size={16} />
+                      )}
                     </button>
                     {!item.trashedAt && (
                       <SaveRibbon
@@ -1438,6 +1502,7 @@ function SettingsPanel({
   const [busy, setBusy] = useState<
     "portability" | "disconnect" | "security" | null
   >(null);
+  const [chatgptPassword, setChatgptPassword] = useState("");
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const actionLock = useRef(false);
   const cancelDisconnect = useRef<HTMLButtonElement>(null);
@@ -1633,8 +1698,9 @@ function SettingsPanel({
               : "Connection status unavailable."}
           </p>
           <p>
-            Disconnecting revokes existing ChatGPT and other app access. Your
-            drops and this browser session stay intact.
+            Disconnecting revokes connected apps’ access to your library. Your
+            drops and this browser session stay intact. ChatGPT sign-in and plan
+            usage are managed separately below.
           </p>
           {confirmDisconnect ? (
             <div className="settings-confirm">
@@ -1669,6 +1735,123 @@ function SettingsPanel({
             </button>
           )}
         </section>
+        {(settings?.chatgpt?.enabled || settings?.chatgpt?.planRequired) && (
+          <section
+            className="settings-section chatgpt-settings"
+            aria-labelledby="settings-chatgpt"
+          >
+            <h3 id="settings-chatgpt">ChatGPT account</h3>
+            <p>
+              {settings.chatgpt.connected
+                ? "ChatGPT is connected for sign-in."
+                : "Connect ChatGPT to this Drop It account for future sign-ins."}
+            </p>
+            <p>
+              {settings.chatgpt.planRequired
+                ? settings.chatgpt.planConnected
+                  ? "AI drafts use your ChatGPT plan. Your plan limits apply; search uses keyword matching."
+                  : "Connect your ChatGPT plan to use AI drafts. Manual entry and keyword search remain available."
+                : "Connecting for sign-in does not enable ChatGPT plan usage."}
+            </p>
+            {new URLSearchParams(location.search).get("chatgpt") ===
+              "error" && (
+              <Alert text="ChatGPT could not be connected. Try again with the same ChatGPT account, or disconnect the existing link first." />
+            )}
+            {settings.chatgpt.enabled && (
+              <>
+                <label>
+                  Current Drop It password
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    value={chatgptPassword}
+                    maxLength={128}
+                    disabled={busy !== null}
+                    onChange={(e) => setChatgptPassword(e.target.value)}
+                  />
+                </label>
+                <button
+                  className="button"
+                  disabled={busy !== null || !chatgptPassword}
+                  onClick={async () => {
+                    if (actionLock.current) return;
+                    actionLock.current = true;
+                    setBusy("security");
+                    setError("");
+                    try {
+                      const result = await api<{ url: string }>(
+                        "/api/chatgpt/start",
+                        "POST",
+                        {
+                          link: true,
+                          plan: settings.chatgpt?.planAvailable ?? false,
+                          currentPassword: chatgptPassword,
+                        },
+                      );
+                      setChatgptPassword("");
+                      location.assign(result.url);
+                    } catch (e) {
+                      setError(message(e));
+                      actionLock.current = false;
+                      setBusy(null);
+                    }
+                  }}
+                >
+                  Continue with ChatGPT
+                </button>
+                {settings.chatgpt.planAvailable && (
+                  <p>
+                    You will be asked to allow Drop It to use your ChatGPT plan
+                    for drafts. If access expires or you reach a limit, drafts
+                    stop without using the site's API key.
+                  </p>
+                )}
+                {settings.chatgpt.connected && (
+                  <button
+                    className="button secondary"
+                    disabled={busy !== null || !chatgptPassword}
+                    onClick={async () => {
+                      if (actionLock.current) return;
+                      actionLock.current = true;
+                      setBusy("security");
+                      setError("");
+                      try {
+                        const result = await api<{ revoked: boolean }>(
+                          "/api/chatgpt/disconnect",
+                          "POST",
+                          { currentPassword: chatgptPassword },
+                        );
+                        setChatgptPassword("");
+                        setAttempt((value) => value + 1);
+                        onChanged();
+                        setNotice(
+                          result.revoked
+                            ? "ChatGPT disconnected. Use your Drop It password to sign in."
+                            : "Disconnected locally. Remote revocation could not be confirmed; also disconnect Drop It in ChatGPT Settings.",
+                        );
+                      } catch (e) {
+                        setError(message(e));
+                      } finally {
+                        actionLock.current = false;
+                        setBusy(null);
+                      }
+                    }}
+                  >
+                    Disconnect ChatGPT
+                  </button>
+                )}
+              </>
+            )}
+            <a
+              className="chatgpt-usage-link"
+              href="https://chatgpt.com/settings/usage"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Manage usage in ChatGPT
+            </a>
+          </section>
+        )}
         <section className="settings-section" aria-labelledby="settings-ai">
           <h3 id="settings-ai">
             <Sparkles size={17} />
@@ -1679,34 +1862,44 @@ function SettingsPanel({
               <dt>OpenAI</dt>
               <dd>
                 {settings
-                  ? settings.aiConfigured
-                    ? "Configured"
-                    : "Not configured"
+                  ? settings.chatgpt?.planRequired
+                    ? settings.chatgpt.planConnected
+                      ? "ChatGPT plan"
+                      : "Connect ChatGPT plan"
+                    : settings.aiConfigured
+                      ? "Configured"
+                      : "Not configured"
                   : "Unknown"}
               </dd>
             </div>
           </dl>
           <p>
             Drafting sends the selected source text, link and image or PDF
-            content to OpenAI when you request a draft. Optional AI search sends
-            your query and may index excerpts from all drops in the selected
-            view and pool (up to 1,000), including unrelated notes and
-            transcription. Unchanged indexed text is cached. Keyword-only search
-            makes no OpenAI requests.
+            content to OpenAI when you request a draft.
+            {!settings?.chatgpt?.planRequired &&
+              " Optional AI search sends your query and may index excerpts from all drops in the selected view and pool (up to 1,000), including unrelated notes and transcription. Unchanged indexed text is cached."}{" "}
+            Keyword-only search makes no OpenAI requests.
           </p>
           <label className="preference-checkbox">
             <input
               type="checkbox"
-              checked={settings?.aiSearchEnabled ?? false}
-              disabled={busy !== null || !settings?.aiConfigured}
+              checked={
+                !settings?.chatgpt?.planRequired &&
+                (settings?.aiSearchEnabled ?? false)
+              }
+              disabled={
+                busy !== null ||
+                !settings?.aiConfigured ||
+                settings?.chatgpt?.planRequired
+              }
               onChange={(event) => void setAISearch(event.target.checked)}
             />
             Allow AI search for this account in the website and connected apps
           </label>
           <p>
-            API keys stay on the server. Configuration does not confirm API
-            access or available credit. OpenAI usage charges and your project’s
-            data policies apply.
+            {settings?.chatgpt?.planRequired
+              ? "ChatGPT authorization stays on the server. Your ChatGPT plan limits and applicable OpenAI data policies apply. Keyword search makes no AI requests."
+              : "API keys stay on the server. Configuration does not confirm API access or available credit. OpenAI usage charges and the site's OpenAI project data policies apply."}
           </p>
         </section>
         <section className="settings-section" aria-labelledby="settings-help">

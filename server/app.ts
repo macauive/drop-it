@@ -6,7 +6,8 @@ import express, {
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import { createHash } from "node:crypto";
+import { ChatGPT } from "./chatgpt.js";
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -54,14 +55,15 @@ export function createApp(
   config: Config,
   html: string,
   ai?: AIProvider,
+  chatgptTransport: typeof fetch = fetch,
 ) {
   const app = express();
-  const auth = new Auth(db, config),
-    library = new Library(
-      db,
-      ai ?? (config.ai ? new OpenAIProvider(config.ai) : undefined),
-      config.libraryLimits,
-    );
+  const auth = new Auth(db, config);
+  const chatgpt = new ChatGPT(db, auth, config, chatgptTransport);
+  const siteAI = ai ?? (config.ai ? new OpenAIProvider(config.ai) : undefined);
+  const library = new Library(db, siteAI, config.libraryLimits, (owner) =>
+    chatgpt.provider(owner, siteAI),
+  );
   const cookie = config.local ? "drop_it_session" : "__Host-drop_it_session";
   const cookieOptions = {
     httpOnly: true,
@@ -198,7 +200,70 @@ export function createApp(
       localSetup: config.local,
       publicAccounts: config.publicAccounts ?? false,
       signupEnabled: config.signupEnabled ?? false,
+      ...(config.chatgpt ? { chatgptEnabled: true } : {}),
     });
+  });
+  const chatgptCookie = config.local
+    ? "drop_it_chatgpt"
+    : "__Host-drop_it_chatgpt";
+  app.post("/api/chatgpt/start", loginLimiter, async (req, res) => {
+    if (!config.chatgpt)
+      throw new AppError(404, "NOT_FOUND", "ChatGPT sign-in is not enabled.");
+    const input = z
+      .object({
+        link: z.boolean().default(false),
+        plan: z.boolean().default(false),
+        currentPassword: currentPasswordSchema.optional(),
+        authorize: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]{20,100}$/)
+          .optional(),
+      })
+      .strict()
+      .parse(req.body);
+    const owner = await auth.sessionOwner(req.cookies[cookie]);
+    if (
+      (input.link && (!owner || !input.currentPassword)) ||
+      (!input.link && owner)
+    )
+      throw new AppError(
+        400,
+        "CHATGPT_LINK",
+        "Connect ChatGPT from Settings while signed in, using your current password.",
+      );
+    const browser = randomBytes(32).toString("base64url");
+    const url = await chatgpt.start(browser, {
+      owner: input.link ? owner : undefined,
+      session: req.cookies[cookie],
+      password: input.currentPassword,
+      plan: input.plan,
+      returnTo: input.link
+        ? "/?chatgpt=connected"
+        : input.authorize
+          ? `/?authorize=${input.authorize}`
+          : "/",
+    });
+    res
+      .cookie(chatgptCookie, browser, { ...cookieOptions, maxAge: 10 * 60000 })
+      .json({ url });
+  });
+  app.get("/auth/chatgpt/callback", loginLimiter, async (req, res) => {
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.clearCookie(chatgptCookie, { ...cookieOptions, maxAge: undefined });
+    try {
+      const result = await chatgpt.finish(
+        req.cookies[chatgptCookie],
+        req.query,
+        req.cookies[cookie],
+        req.get("User-Agent"),
+      );
+      res
+        .cookie(cookie, result.token, cookieOptions)
+        .redirect(303, result.returnTo);
+    } catch {
+      // Never reflect provider errors, codes, tokens or query strings.
+      res.redirect(303, "/?chatgpt=error");
+    }
   });
   app.post("/api/setup", loginLimiter, async (req, res) => {
     const address = req.socket.remoteAddress;
@@ -268,6 +333,16 @@ export function createApp(
       );
     res.locals.owner = owner;
     next();
+  });
+  app.post("/api/chatgpt/disconnect", reauthLimiter, async (req, res) => {
+    const { currentPassword } = reauthSchema.parse(req.body);
+    res.json(
+      await chatgpt.disconnect(
+        res.locals.owner,
+        req.cookies[cookie],
+        currentPassword,
+      ),
+    );
   });
   app.post("/api/logout", async (req, res) => {
     await auth.logout(req.cookies[cookie]);
@@ -355,13 +430,17 @@ export function createApp(
       .json({ ok: true });
   });
   app.get("/api/settings", async (_req, res) => {
+    const chatgptStatus = await chatgpt.status(res.locals.owner);
     const { rows } = await db.query<{ count: string }>(
       "SELECT count(DISTINCT client_id) FROM oauth_tokens WHERE owner=$1 AND expires_at>now()",
       [res.locals.owner],
     );
     res.json(
       settingsSchema.parse({
-        aiConfigured: library.aiAvailable,
+        aiConfigured: Boolean(await library.aiForOwner(res.locals.owner)),
+        ...(chatgptStatus.enabled || chatgptStatus.planRequired
+          ? { chatgpt: chatgptStatus }
+          : {}),
         connectedApps: Number(rows[0].count),
         trashRetentionDays: 7,
         ...(await library.preferences(res.locals.owner)),
@@ -370,6 +449,15 @@ export function createApp(
     );
   });
   app.patch("/api/preferences", async (req, res) => {
+    if (
+      (await chatgpt.status(res.locals.owner)).planRequired &&
+      req.body?.aiSearchEnabled === true
+    )
+      throw new AppError(
+        400,
+        "AI_SEARCH_UNAVAILABLE",
+        "ChatGPT plan accounts use keyword search.",
+      );
     res.json(await library.setPreferences(res.locals.owner, req.body));
   });
   app.delete("/api/attachments/:id", async (req, res) => {
@@ -448,7 +536,10 @@ export function createApp(
     res.type(image.mime).send(image.bytes);
   });
   app.get("/api/sources/:id/thumbnail", async (req, res) => {
-    const { size } = z.object({ size: z.enum(["grid"]).optional() }).strict().parse(req.query);
+    const { size } = z
+      .object({ size: z.enum(["grid"]).optional() })
+      .strict()
+      .parse(req.query);
     const image = await library.image(
       res.locals.owner,
       idSchema.parse(req.params.id),

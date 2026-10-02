@@ -38,6 +38,16 @@ export const storageSchema = z
 export const settingsSchema = z
   .object({
     aiConfigured: z.boolean(),
+    chatgpt: z
+      .object({
+        enabled: z.boolean(),
+        planAvailable: z.boolean(),
+        connected: z.boolean(),
+        planConnected: z.boolean(),
+        planRequired: z.boolean(),
+      })
+      .strict()
+      .optional(),
     connectedApps: z.number().int().nonnegative(),
     trashRetentionDays: z.literal(7),
     aiSearchEnabled: z.boolean().optional(),

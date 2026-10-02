@@ -494,7 +494,7 @@ test("migration seven preserves legacy sessions and is idempotent", async () => 
           "SELECT version FROM schema_migrations ORDER BY version",
         )
       ).rows,
-      Array.from({ length: 9 }, (_, index) => ({ version: index + 1 })),
+      Array.from({ length: 10 }, (_, index) => ({ version: index + 1 })),
     );
   } finally {
     await legacyDb.close();

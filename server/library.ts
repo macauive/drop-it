@@ -98,6 +98,9 @@ export class Library {
     readonly db: Database,
     private readonly ai?: AIProvider,
     limits: Partial<LibraryLimits> = {},
+    private readonly resolveAI?: (
+      owner: string,
+    ) => Promise<AIProvider | undefined>,
   ) {
     this.limits = { ...defaultLibraryLimits, ...limits };
     for (const value of Object.values(this.limits))
@@ -112,6 +115,9 @@ export class Library {
   >();
   get aiAvailable() {
     return Boolean(this.ai);
+  }
+  async aiForOwner(owner: string) {
+    return this.resolveAI ? this.resolveAI(owner) : this.ai;
   }
   async profile(owner: string) {
     const { rows } = await this.db.query<{
@@ -245,7 +251,8 @@ export class Library {
     });
   }
   private async withAI<T>(owner: string, run: (ai: AIProvider) => Promise<T>) {
-    if (!this.ai)
+    const provider = await this.aiForOwner(owner);
+    if (!provider)
       throw new AppError(
         503,
         "AI_UNAVAILABLE",
@@ -284,7 +291,7 @@ export class Library {
     this.serviceAI.busy++;
     this.serviceAI.count++;
     try {
-      return await run(this.ai);
+      return await run(provider);
     } finally {
       usage.busy = false;
       this.serviceAI.busy--;
@@ -453,7 +460,7 @@ export class Library {
       return keywordFallback(
         "Showing keyword matches. AI search is turned off in Settings.",
       );
-    if (q.mode === "hybrid" && q.query && !this.aiAvailable)
+    if (q.mode === "hybrid" && q.query && !(await this.aiForOwner(owner)))
       return keywordFallback(
         "Showing keyword matches. AI search is unavailable.",
       );
@@ -601,7 +608,7 @@ export class Library {
           q.query,
         ),
       ),
-      aiAvailable: this.aiAvailable,
+      aiAvailable: Boolean(await this.aiForOwner(owner)),
       aiSearchEnabled,
       mode: semantic ? q.mode : ("keyword" as const),
       categories: categoryRows.rows.map((row) =>
