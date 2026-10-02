@@ -1699,8 +1699,9 @@ function SettingsPanel({
           </p>
           <p>
             Disconnecting revokes connected apps’ access to your library. Your
-            drops and this browser session stay intact. ChatGPT sign-in and plan
-            usage are managed separately below.
+            drops and this browser session stay intact.
+            {settings?.chatgpt &&
+              " ChatGPT sign-in and plan usage are managed separately below."}
           </p>
           {confirmDisconnect ? (
             <div className="settings-confirm">
