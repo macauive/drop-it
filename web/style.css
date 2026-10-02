@@ -220,7 +220,7 @@ p {
   min-height: 42px;
   width: 100%;
 }
-.nav-item span {
+.nav-item .nav-count {
   margin-left: auto;
   font-size: 11px;
   color: var(--muted);
@@ -229,7 +229,7 @@ p {
   background: #e4edf9;
   color: #1859a7;
 }
-.nav-item.active span {
+.nav-item.active .nav-count {
   color: #1859a7;
 }
 .nav-item .trash-nav-icon {
@@ -241,13 +241,41 @@ p {
   display: grid;
   gap: 14px;
 }
-.private-label {
+.topbar-leading {
   display: flex;
-  gap: 8px;
   align-items: center;
-  padding: 0 13px;
-  color: var(--muted);
-  font-size: 11px;
+  gap: 12px;
+  min-width: 0;
+}
+.sidebar-toggle {
+  flex: none;
+}
+.sidebar .nav-item svg {
+  flex: none;
+}
+.app.sidebar-collapsed .sidebar {
+  width: 64px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+.sidebar-collapsed .sidebar .brand {
+  margin-left: 0;
+  margin-right: 0;
+  justify-content: center;
+}
+.sidebar-collapsed .sidebar .brand-name,
+.sidebar-collapsed .sidebar .nav-label,
+.sidebar-collapsed .sidebar .nav-count {
+  display: none;
+}
+.sidebar-collapsed .sidebar-label {
+  visibility: hidden;
+  padding: 0;
+}
+.sidebar-collapsed .sidebar .nav-item {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
 }
 .workspace {
   flex: 1;
@@ -1298,7 +1326,8 @@ html[data-theme="dark"] .layout-icon .drop-preview {
     min-height: 28px;
   }
   .sidebar,
-  .embedded .sidebar {
+  .embedded .sidebar,
+  .sidebar-toggle {
     display: none;
   }
   .app {
@@ -1537,7 +1566,8 @@ summary:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
-html[data-display-mode="inline"] .embedded .sidebar {
+html[data-display-mode="inline"] .embedded .sidebar,
+html[data-display-mode="inline"] .embedded .sidebar-toggle {
   display: none;
 }
 html[data-display-mode="inline"] .embedded {

@@ -10,6 +10,7 @@ import { createRoot } from "react-dom/client";
 import { DropPreview } from "./drop-preview.js";
 import { poolTone } from "./pool-colors.js";
 import { LayoutSwitcher, readLayout, rememberLayout } from "./library-layout.js";
+import { SidebarToggle, readSidebarCollapsed, rememberSidebarCollapsed } from "./sidebar.js";
 import {
   ArrowDownToLine,
   Droplet,
@@ -161,7 +162,7 @@ function Brand() {
         <Droplet size={19} strokeWidth={1.8} />
         <span className="brand-tray" />
       </span>
-      <span>
+      <span className="brand-name">
         drop it<span className="brand-dot">.</span>
       </span>
     </div>
@@ -574,6 +575,7 @@ function Consent({ id }: { id: string }) {
 
 function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
   const [layout, setLayout] = useState(readLayout);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const [searchDraft, setSearchDraft] = useState("");
   const [query, setQuery] = useState(""),
     [view, setView] = useState<(typeof views)[number]>(() =>
@@ -810,8 +812,8 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
   };
   const total = (data.counts["All drops"] ?? 0) + (data.counts.Trash ?? 0);
   return (
-    <div className={`app ${embedded ? "embedded" : ""}`}>
-      <aside className="sidebar">
+    <div className={`app ${embedded ? "embedded" : ""} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <aside className="sidebar" id="library-sidebar">
         <Brand />
         <span className="sidebar-label">LIBRARY</span>
         <nav aria-label="Library views">
@@ -821,36 +823,42 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
               <button
                 key={value}
                 className={`nav-item ${view === value ? "active" : ""}`}
+                aria-label={`${value} ${data.counts[value] ?? 0}`}
+                aria-current={view === value ? "page" : undefined}
+                title={`${value} (${data.counts[value] ?? 0})`}
                 onClick={() => changeView(value)}
               >
                 <Icon
                   size={17}
                   className={value === "Trash" ? "trash-nav-icon" : undefined}
                 />
-                {value}
-                <span>{data.counts[value] ?? 0}</span>
+                <span className="nav-label">{value}</span>
+                <span className="nav-count">{data.counts[value] ?? 0}</span>
               </button>
             );
           })}
         </nav>
         <div className="sidebar-bottom">
-          <span className="private-label">
-            <ShieldCheck size={15} />
-            Personal library
-          </span>
           {!embedded && (
-            <button className="nav-item" onClick={signOut}>
+            <button className="nav-item" onClick={signOut} aria-label="Sign out" title="Sign out">
               <LogOut size={16} />
-              Sign out
+              <span className="nav-label">Sign out</span>
             </button>
           )}
         </div>
       </aside>
       <main className="workspace">
         <header className="topbar">
-          <span className="breadcrumb">
-            Library <span>/</span> <strong>{view}</strong>
-          </span>
+          <div className="topbar-leading">
+            <SidebarToggle collapsed={sidebarCollapsed} onToggle={() => {
+              const next = !sidebarCollapsed;
+              setSidebarCollapsed(next);
+              rememberSidebarCollapsed(next);
+            }} />
+            <span className="breadcrumb">
+              Library <span>/</span> <strong>{view}</strong>
+            </span>
+          </div>
           <div className="top-actions">
             {embedded &&
               hostState.canFullscreen &&

@@ -1,0 +1,81 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { randomBytes, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import sharp from "sharp";
+import { openDatabase, migrate } from "../server/db.js";
+import { createApp } from "../server/app.js";
+import { thumbnail } from "../server/thumbnails.js";
+
+test("thumbnails preserve proportions, strip metadata, and recover after invalid input", async () => {
+  const bytes = await sharp({ create: { width: 800, height: 400, channels: 3, background: "#1764c0" } }).jpeg().toBuffer();
+  const result = await thumbnail(bytes);
+  const meta = await sharp(result).metadata();
+  assert.equal(meta.format, "webp");
+  assert.equal(meta.width, 144);
+  assert.equal(meta.height, 72);
+  assert.equal(meta.exif, undefined);
+  const gridMeta = await sharp(await thumbnail(bytes, "grid")).metadata();
+  assert.equal(gridMeta.width, 640);
+  assert.equal(gridMeta.height, 320);
+  const portrait = await thumbnail(await sharp({ create: { width: 200, height: 800, channels: 3, background: "#e04050" } }).png().toBuffer());
+  assert.equal((await sharp(portrait).metadata()).height, 112);
+  assert.equal((await sharp(portrait).metadata()).width, 28);
+  await assert.rejects(thumbnail(Buffer.from("not an image")));
+  const batch = await Promise.all(Array.from({ length: 20 }, () => thumbnail(bytes)));
+  assert.equal(batch.length, 20);
+  assert.ok(batch.every((image) => image.equals(result)));
+});
+
+test("thumbnail HTTP access is authenticated, owner scoped, no-store, and respects Trash expiry", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drop-it-thumbnails-"));
+  const db = await openDatabase({ dataDir: dir });
+  const server = createServer();
+  try {
+    await migrate(db);
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as { port: number }).port;
+    const origin = `http://127.0.0.1:${port}`;
+    const { app, library, auth } = createApp(db, { port, origin, local: true, production: false, redirectUris: [], dataDir: dir, databaseUrl: undefined, ai: undefined }, "<html></html>");
+    server.on("request", app);
+    const owner = randomUUID(), other = randomUUID();
+    await db.query("INSERT INTO users(id,singleton,password_hash) VALUES($1,NULL,$3),($2,NULL,$3)", [owner, other, randomBytes(32).toString("hex")]);
+    const session = await auth.session(owner), foreign = await auth.session(other);
+    const bytes = await sharp({ create: { width: 800, height: 400, channels: 3, background: "#1764c0" } }).png().toBuffer();
+    const upload = await library.upload(owner, bytes, "image/png", "preview.png");
+    const saved = await library.save(owner, { requestId: randomUUID(), title: "Preview test", source: { attachmentId: upload.attachmentId } });
+    const path = `/api/sources/${saved.source.id}/thumbnail`;
+    const request = (target = path, cookie = session) => fetch(`${origin}${target}`, { headers: { Cookie: `drop_it_session=${cookie}` } });
+    assert.equal((await request(path, "")).status, 401);
+    assert.equal((await request(path, foreign)).status, 404);
+    assert.equal((await request("/api/sources/not-a-uuid/thumbnail")).status, 400);
+    assert.equal((await request(`${path}?size=huge`)).status, 400);
+    assert.equal((await request(`${path}?width=999999`)).status, 400);
+    const grid = await request(`${path}?size=grid`);
+    assert.equal(grid.status, 200);
+    assert.equal((await sharp(Buffer.from(await grid.arrayBuffer())).metadata()).width, 640);
+    const response = await request();
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.match(response.headers.get("content-type")!, /^image\/webp/);
+    assert.equal((await sharp(Buffer.from(await response.arrayBuffer())).metadata()).width, 144);
+    const original = await request(`/api/sources/${saved.source.id}/image`);
+    assert.deepEqual(Buffer.from(await original.arrayBuffer()), bytes);
+    const text = await library.save(owner, { requestId: randomUUID(), title: "Text only", source: { originalText: "No thumbnail" } });
+    assert.equal((await request(`/api/sources/${text.source.id}/thumbnail`)).status, 404);
+    await db.query("UPDATE items SET trashed_at=now() WHERE id=$1", [saved.item.id]);
+    assert.equal((await request()).status, 200);
+    await db.query("UPDATE items SET trashed_at=now()-interval '8 days' WHERE id=$1", [saved.item.id]);
+    assert.equal((await request()).status, 404);
+  } finally {
+    server.closeAllConnections();
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

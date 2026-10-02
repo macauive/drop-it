@@ -355,6 +355,16 @@ async function attachHost() {
   );
   say("Host enabled. Waiting for initialization or the widget Retry button.");
 }
+for (const theme of ["light", "dark"] as const) {
+  el(`theme-${theme}`).addEventListener("click", () => {
+    bridge?.setHostContext({ theme });
+  });
+}
+for (const displayMode of ["inline", "fullscreen"] as const) {
+  el(`mode-${displayMode}`).addEventListener("click", () => {
+    bridge?.setHostContext({ displayMode });
+  });
+}
 async function reset(connected: boolean) {
   const old = bridge;
   bridge = undefined;
