@@ -366,6 +366,7 @@ test("read-only MCP tokens reject all writes and cross-owner reads do not disclo
 });
 
 test("the AI concurrency gate rejects before loading attachment bytes or semantic source documents", async () => {
+  await library.setPreferences(owner, { aiSearchEnabled: true });
   await library.save(owner, input("Bounded semantic search"));
   const file = await library.upload(
     owner,
@@ -379,18 +380,17 @@ test("the AI concurrency gate rejects before loading attachment bytes or semanti
   );
   let attachmentReads = 0;
   let documentReads = 0;
+  const observe = (sql: string) => {
+    if (sql.includes("SELECT a.bytes,a.mime,a.filename,a.original_text")) attachmentReads++;
+    if (sql.includes('AS "originalText"') && sql.includes('AS "keywordMatch"')) documentReads++;
+  };
   const observed: Database = {
     ...db,
     query: async (sql, params) => {
-      if (
-        sql.includes(
-          "SELECT bytes,mime,filename,original_text FROM attachments",
-        )
-      )
-        attachmentReads++;
-      if (sql.includes('s.original_text AS "originalText"')) documentReads++;
+      observe(sql);
       return db.query(sql, params);
     },
+    transaction: (run) => db.transaction((tx) => run({ query: (sql, params) => { observe(sql); return tx.query(sql, params); } })),
   };
   let started!: () => void, release!: () => void;
   const active = new Promise<void>((resolve) => {

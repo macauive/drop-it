@@ -28,7 +28,26 @@ import {
 } from "../shared/schema.js";
 import { OpenAIProvider, type AIProvider } from "./ai.js";
 import { addPublicPages } from "./public-pages.js";
+import { addPortabilityRoutes } from "./portability.js";
+import { sharedCaptureSchema } from "../shared/capture.js";
+import sharp from "sharp";
 import { thumbnail } from "./thumbnails.js";
+
+const appIconSvg =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect width="192" height="192" rx="40" fill="#1764c0"/><path d="M96 34c-18 26-42 50-42 75a42 42 0 0 0 84 0c0-25-24-49-42-75Z" fill="none" stroke="white" stroke-width="10"/><path d="M48 145v15h96v-15" fill="none" stroke="white" stroke-width="8"/></svg>';
+const appIconPng: Partial<Record<192 | 512, Promise<Buffer>>> = {};
+function pngAppIcon(size: 192 | 512) {
+  // Only two constant routes can request these sizes. Share in-flight work and
+  // cache the resulting buffers across app instances; never resize user input.
+  return (appIconPng[size] ??= sharp(Buffer.from(appIconSvg))
+    .resize(size, size)
+    .png()
+    .toBuffer()
+    .catch((error: unknown) => {
+      delete appIconPng[size];
+      throw error;
+    }));
+}
 
 export function createApp(
   db: Database,
@@ -41,6 +60,7 @@ export function createApp(
     library = new Library(
       db,
       ai ?? (config.ai ? new OpenAIProvider(config.ai) : undefined),
+      config.libraryLimits,
     );
   const cookie = config.local ? "drop_it_session" : "__Host-drop_it_session";
   const cookieOptions = {
@@ -92,11 +112,22 @@ export function createApp(
   });
   app.get("/health", (_req, res) => res.json({ ok: true }));
   app.get("/ready", async (_req, res) => {
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      await db.query("SELECT 1");
+      await Promise.race([
+        db.query("SELECT 1"),
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(
+            () => reject(new Error("Readiness deadline")),
+            3000,
+          );
+        }),
+      ]);
       res.json({ ok: true });
     } catch {
       res.status(503).json({ ok: false });
+    } finally {
+      clearTimeout(deadline);
     }
   });
   app.use(
@@ -130,7 +161,9 @@ export function createApp(
   });
   const jsonBody = express.json({ limit: "512kb" });
   app.use("/api", (req, res, next) =>
-    req.path === "/attachments" ? next() : jsonBody(req, res, next),
+    ["/attachments", "/portability/preview"].includes(req.path)
+      ? next()
+      : jsonBody(req, res, next),
   );
   const loginLimiter = rateLimit({
     windowMs: 15 * 60000,
@@ -331,9 +364,23 @@ export function createApp(
         aiConfigured: library.aiAvailable,
         connectedApps: Number(rows[0].count),
         trashRetentionDays: 7,
+        ...(await library.preferences(res.locals.owner)),
+        storage: await library.storage(res.locals.owner),
       }),
     );
   });
+  app.patch("/api/preferences", async (req, res) => {
+    res.json(await library.setPreferences(res.locals.owner, req.body));
+  });
+  app.delete("/api/attachments/:id", async (req, res) => {
+    res.json(
+      await library.discardUpload(
+        res.locals.owner,
+        idSchema.parse(req.params.id),
+      ),
+    );
+  });
+  const portability = addPortabilityRoutes(app, db, config.libraryLimits);
   app.get("/api/authorize/:id", async (req, res) =>
     res.json(
       await auth.pending(z.string().min(20).max(100).parse(req.params.id)),
@@ -400,11 +447,6 @@ export function createApp(
     );
     res.type(image.mime).send(image.bytes);
   });
-  app.post("/api/search", async (req, res) =>
-    res.json(
-      await library.search(res.locals.owner, searchSchema.parse(req.body)),
-    ),
-  );
   app.get("/api/sources/:id/thumbnail", async (req, res) => {
     const { size } = z.object({ size: z.enum(["grid"]).optional() }).strict().parse(req.query);
     const image = await library.image(
@@ -413,6 +455,11 @@ export function createApp(
     );
     res.type("image/webp").send(await thumbnail(image.bytes, size));
   });
+  app.post("/api/search", async (req, res) =>
+    res.json(
+      await library.search(res.locals.owner, searchSchema.parse(req.body)),
+    ),
+  );
   app.post("/api/draft", async (req, res) =>
     res.json(await library.draft(res.locals.owner, req.body)),
   );
@@ -553,6 +600,79 @@ export function createApp(
   );
   app.all("/mcp", (_req, res) => res.status(405).set("Allow", "POST").end());
   app.get("/", (_req, res) => res.type("html").send(html));
+  // Web Share Target only prepares a draft. It cannot save, upload, invoke AI,
+  // or change the account; those actions still require authenticated API calls.
+  app.post(
+    "/share",
+    express.urlencoded({ extended: false, limit: "64kb", parameterLimit: 3 }),
+    (req, res) => {
+      const capture = sharedCaptureSchema.parse(req.body);
+      const encoded = JSON.stringify(capture).replace(
+        /[<>&]/g,
+        (value) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[value]!,
+      );
+      res
+        .type("html")
+        .send(
+          html.replace(
+            '<div id="root"></div>',
+            `<template id="shared-drop">${encoded}</template><div id="root"></div>`,
+          ),
+        );
+    },
+  );
+  app.get("/manifest.webmanifest", (_req, res) =>
+    res.type("application/manifest+json").json({
+      id: "/",
+      name: "Drop It",
+      short_name: "Drop It",
+      start_url: "/",
+      scope: "/",
+      display: "standalone",
+      background_color: "#f8f9fb",
+      theme_color: "#1764c0",
+      icons: [
+        {
+          src: "/app-icon-192.png",
+          sizes: "192x192",
+          type: "image/png",
+          purpose: "any",
+        },
+        {
+          src: "/app-icon-512.png",
+          sizes: "512x512",
+          type: "image/png",
+          purpose: "any",
+        },
+        {
+          src: "/app-icon.svg",
+          sizes: "any",
+          type: "image/svg+xml",
+          purpose: "any",
+        },
+      ],
+      share_target: {
+        action: "/share",
+        method: "POST",
+        enctype: "application/x-www-form-urlencoded",
+        params: { title: "title", text: "text", url: "url" },
+      },
+    }),
+  );
+  app.get(["/app-icon-192.png", "/app-icon-512.png"], async (req, res) => {
+    const size = req.path === "/app-icon-192.png" ? 192 : 512;
+    res.type("image/png").send(await pngAppIcon(size));
+  });
+  app.get("/app-icon.svg", (_req, res) =>
+    res.type("image/svg+xml").send(appIconSvg),
+  );
+  app.get("/sw.js", (_req, res) =>
+    res
+      .type("application/javascript")
+      .send(
+        'self.addEventListener("install",()=>self.skipWaiting());self.addEventListener("activate",event=>event.waitUntil(self.clients.claim()));',
+      ),
+  );
   app.use((_req, res) => res.status(404).json({ error: "Not found." }));
   app.use(
     (error: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -593,5 +713,5 @@ export function createApp(
       res.status(500).json({ error: "Something went wrong. Please retry." });
     },
   );
-  return { app, auth, library };
+  return { app, auth, library, close: () => portability.close() };
 }

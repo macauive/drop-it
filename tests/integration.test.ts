@@ -16,6 +16,8 @@ import type { Auth } from "../server/auth.js";
 import { dimensions } from "../server/ai.js";
 import { pdfFixture } from "./pdf-fixture.js";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { Library } from "../server/library.js";
+import { settingsSchema, storageSchema } from "../shared/schema.js";
 
 let server: Server,
   db: Database,
@@ -187,6 +189,11 @@ test("real HTTP capture/upload/search/edit/export/delete flow preserves original
   const found = await search.json();
   assert.equal(found.total, 1);
   assert.deepEqual(found.categories, ["Cloud Infrastructure"]);
+  assert.equal(
+    (await request("/api/preferences", "PATCH", { aiSearchEnabled: true }))
+      .status,
+    200,
+  );
   const semantic = await request("/api/search", "POST", {
     query: "Find a useful project",
     mode: "semantic",
@@ -478,20 +485,17 @@ test("MCP SDK client can discover tools, authenticate, and enforce read-only sco
   for (const tool of tools.tools) {
     assert.doesNotMatch(JSON.stringify(tool.inputSchema), /\\\\[pP]\{/);
   }
-  assert.deepEqual(
-    tools.tools.map((tool) => tool.name).sort(),
-    [
-      "draft_drop",
-      "get_drop",
-      "get_profile",
-      "restore_drop",
-      "save_drop",
-      "search_drops",
-      "update_drop",
-      "upload_source",
-      "wipe_drop",
-    ],
-  );
+  assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
+    "draft_drop",
+    "get_drop",
+    "get_profile",
+    "restore_drop",
+    "save_drop",
+    "search_drops",
+    "update_drop",
+    "upload_source",
+    "wipe_drop",
+  ]);
   const wipe = tools.tools.find((tool) => tool.name === "wipe_drop")!;
   assert.equal(wipe.title, "Wipe drop");
   assert.equal(wipe.annotations?.destructiveHint, true);
@@ -541,7 +545,7 @@ test("MCP SDK client can discover tools, authenticate, and enforce read-only sco
   });
   assert.equal(draftDenied.isError, true);
   const resource = await client.readResource({
-    uri: "ui://drop-it/library-v4.html",
+    uri: "ui://drop-it/library-v5.html",
   });
   assert.equal(resource.contents[0].mimeType, "text/html;profile=mcp-app");
   assert.deepEqual(resource.contents[0]._meta?.ui, {
@@ -562,11 +566,19 @@ test("settings expose only safe owner-scoped configuration and disconnect preser
   const baseline = await baselineResponse.json();
   assert.deepEqual(Object.keys(baseline).sort(), [
     "aiConfigured",
+    "aiSearchEnabled",
     "connectedApps",
+    "storage",
     "trashRetentionDays",
   ]);
+  settingsSchema.parse(baseline);
+  storageSchema.parse(baseline.storage);
   assert.equal(baseline.aiConfigured, true);
+  assert.equal(baseline.aiSearchEnabled, true);
   assert.equal(baseline.trashRetentionDays, 7);
+  assert.equal(baseline.storage.attachmentLimitBytes, 250 * 1024 ** 2);
+  assert.equal(baseline.storage.dropLimit, 10000);
+  assert.equal(baseline.storage.textLimitBytes, 25 * 1024 ** 2);
   const owner = (
     await db.query<{ id: string }>("SELECT id FROM users WHERE singleton=true")
   ).rows[0].id;
@@ -574,6 +586,12 @@ test("settings expose only safe owner-scoped configuration and disconnect preser
   await db.query(
     "INSERT INTO users(id,singleton,password_hash) VALUES($1,NULL,$2)",
     [other, randomBytes(32).toString("hex")],
+  );
+  await new Library(db).upload(
+    other,
+    Buffer.from("Synthetic foreign file"),
+    "text/plain",
+    "foreign.txt",
   );
   const family = randomUUID(),
     clientId = randomUUID();
@@ -605,6 +623,8 @@ test("settings expose only safe owner-scoped configuration and disconnect preser
   await insert(other, randomUUID(), "access", future);
   const settings = await (await request("/api/settings")).json();
   assert.equal(settings.connectedApps, baseline.connectedApps + 1);
+  assert.deepEqual(settings.storage, baseline.storage);
+  assert.equal(settings.aiSearchEnabled, true);
   assert.equal(
     (
       await request(
@@ -643,6 +663,7 @@ test("settings expose only safe owner-scoped configuration and disconnect preser
     true,
   );
   await db.query("DELETE FROM oauth_tokens WHERE owner=$1", [other]);
+  await db.query("DELETE FROM attachments WHERE owner=$1", [other]);
   await db.query("DELETE FROM users WHERE id=$1", [other]);
 });
 

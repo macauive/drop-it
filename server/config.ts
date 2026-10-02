@@ -9,6 +9,7 @@ export type Config = Omit<
   | "trustProxy"
   | "publicSite"
   | "domainChallenge"
+  | "libraryLimits"
 > &
   Partial<
     Pick<
@@ -18,6 +19,7 @@ export type Config = Omit<
       | "trustProxy"
       | "publicSite"
       | "domainChallenge"
+      | "libraryLimits"
     >
   >;
 export function loadConfig() {
@@ -128,5 +130,43 @@ export function loadConfig() {
             .parse(process.env.OPENAI_MODEL ?? "gpt-5.6-luna"),
         }
       : undefined,
+    libraryLimits: {
+      ownerAttachmentBytes: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(1024 ** 4)
+        .parse(process.env.MAX_OWNER_ATTACHMENT_BYTES ?? 250 * 1024 ** 2),
+      ownerDropCount: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(1000000)
+        .parse(process.env.MAX_OWNER_DROPS ?? 10000),
+      ownerTextBytes: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(1024 ** 4)
+        .parse(process.env.MAX_OWNER_TEXT_BYTES ?? 25 * 1024 ** 2),
+      serviceAttachmentBytes: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(1024 ** 4)
+        .parse(process.env.MAX_SERVICE_ATTACHMENT_BYTES ?? 3 * 1024 ** 3),
+      aiConcurrent: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .parse(process.env.MAX_AI_CONCURRENT ?? 4),
+      aiStartsPerMinute: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(10000)
+        .parse(process.env.MAX_AI_STARTS_PER_MINUTE ?? 120),
+    },
   };
 }

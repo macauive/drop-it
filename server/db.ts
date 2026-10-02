@@ -14,27 +14,67 @@ export async function openDatabase(
   config: Pick<Config, "dataDir"> & Partial<Pick<Config, "databaseUrl">>,
 ): Promise<Database> {
   if (config.databaseUrl) {
-    const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 5 });
+    const pool = new pg.Pool({
+      connectionString: config.databaseUrl,
+      max: 5,
+      connectionTimeoutMillis: 5000,
+      query_timeout: 15000,
+      statement_timeout: 15000,
+      lock_timeout: 5000,
+      idle_in_transaction_session_timeout: 15000,
+    });
+    // Idle connections emit outside any request promise. Do not log connection
+    // strings or provider errors, and let the pool replace failed clients.
+    pool.on("error", () =>
+      console.error("Database connection interrupted", {
+        code: "DATABASE_CONNECTION_ERROR",
+      }),
+    );
     return {
       query: async <T>(sql: string, params?: unknown[]) => ({
         rows: (await pool.query(sql, params)).rows as T[],
       }),
       transaction: async (fn) => {
         const client = await pool.connect();
+        let connectionError: Error | undefined;
+        // A checked-out client has no pool error listener. In particular an
+        // idle transaction can be terminated while its callback awaits I/O.
+        const interrupted = (error: Error) => {
+          connectionError = error;
+          console.error("Database connection interrupted", {
+            code: "DATABASE_CONNECTION_ERROR",
+          });
+        };
+        client.on("error", interrupted);
         try {
           await client.query("BEGIN");
           const value = await fn({
-            query: async <T>(sql: string, params?: unknown[]) => ({
-              rows: (await client.query(sql, params)).rows as T[],
-            }),
+            query: async <T>(sql: string, params?: unknown[]) => {
+              if (connectionError) throw connectionError;
+              return { rows: (await client.query(sql, params)).rows as T[] };
+            },
           });
+          if (connectionError) throw connectionError;
           await client.query("COMMIT");
           return value;
         } catch (error) {
-          await client.query("ROLLBACK");
+          if (!connectionError) {
+            try {
+              await client.query("ROLLBACK");
+            } catch (rollbackError) {
+              // Discard an unusable client without replacing the original
+              // failure with a second error from a failed rollback.
+              connectionError =
+                rollbackError instanceof Error
+                  ? rollbackError
+                  : new Error("Database rollback failed");
+            }
+          }
           throw error;
         } finally {
-          client.release();
+          // release restores the pool's error listener before ours is removed.
+          client.release(connectionError);
+          client.removeListener("error", interrupted);
         }
       },
       close: () => pool.end(),
@@ -227,5 +267,40 @@ export async function migrate(db: Database) {
       "CREATE UNIQUE INDEX users_recovery_hash_unique ON users(recovery_hash) WHERE recovery_hash IS NOT NULL",
     );
     await tx.query("INSERT INTO schema_migrations(version) VALUES(8)");
+  });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=9"))
+        .rows.length
+    )
+      return;
+    await tx.query(
+      "ALTER TABLE users ADD COLUMN ai_search_enabled boolean NOT NULL DEFAULT false",
+    );
+    await tx.query(
+      "ALTER TABLE sources ADD COLUMN normalized_url text NOT NULL DEFAULT ''",
+    );
+    await tx.query("UPDATE sources SET normalized_url=split_part(url,'#',1)");
+    await tx.query(
+      "CREATE INDEX sources_owner_normalized_url ON sources(owner,normalized_url) WHERE normalized_url<>''",
+    );
+    await tx.query(
+      "CREATE INDEX sources_owner_attachment ON sources(owner,attachment_id)",
+    );
+    await tx.query("CREATE INDEX items_owner_source ON items(owner,source_id)");
+    await tx.query(`ALTER TABLE items ADD COLUMN reviewed_transcription text,
+      ADD COLUMN transcription_updated_at timestamptz,
+      ADD CONSTRAINT reviewed_transcription_length CHECK(char_length(reviewed_transcription)<=50000),
+      ADD CONSTRAINT reviewed_transcription_state CHECK((reviewed_transcription IS NULL) = (transcription_updated_at IS NULL))`);
+    await tx.query(
+      "CREATE TABLE capacity_lock (id integer PRIMARY KEY CHECK(id=1))",
+    );
+    await tx.query("INSERT INTO capacity_lock(id) VALUES(1)");
+    await tx.query(`CREATE TABLE portability_imports (
+      owner uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, request_id uuid NOT NULL,
+      archive_digest text NOT NULL, item_count integer NOT NULL CHECK(item_count>=0),
+      source_count integer NOT NULL CHECK(source_count>=0), file_count integer NOT NULL CHECK(file_count>=0),
+      created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(owner,request_id))`);
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(9)");
   });
 }

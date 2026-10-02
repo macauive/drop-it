@@ -18,11 +18,30 @@ export const categorySchema = z
       .refine((value) => /[\p{L}\p{N}]/u.test(value)),
   );
 export const views = ["All drops", "Saved", "Trash"] as const;
+export const preferencesSchema = z
+  .object({ aiSearchEnabled: z.boolean() })
+  .strict();
+export const storageSchema = z
+  .object({
+    attachmentBytes: z.number().int().nonnegative(),
+    activeBytes: z.number().int().nonnegative(),
+    trashBytes: z.number().int().nonnegative(),
+    abandonedBytes: z.number().int().nonnegative(),
+    expiredBytes: z.number().int().nonnegative(),
+    attachmentLimitBytes: z.number().int().positive(),
+    dropCount: z.number().int().nonnegative(),
+    dropLimit: z.number().int().positive(),
+    textBytes: z.number().int().nonnegative(),
+    textLimitBytes: z.number().int().positive(),
+  })
+  .strict();
 export const settingsSchema = z
   .object({
     aiConfigured: z.boolean(),
     connectedApps: z.number().int().nonnegative(),
     trashRetentionDays: z.literal(7),
+    aiSearchEnabled: z.boolean().optional(),
+    storage: storageSchema.optional(),
   })
   .strict();
 export type LibrarySettings = z.infer<typeof settingsSchema>;
@@ -125,6 +144,7 @@ export const saveSchema = fieldsSchema
     source: sourceInputSchema.optional(),
     sourceId: idSchema.optional(),
     allowDuplicate: z.boolean().default(false),
+    reviewedTranscription: z.string().max(50000).nullable().optional(),
   })
   .strict()
   .refine(
@@ -158,6 +178,7 @@ export const updateSchema = z
     id: idSchema,
     revision: z.number().int().positive(),
     isSaved: z.boolean().optional(),
+    reviewedTranscription: z.string().max(50000).nullable().optional(),
   })
   .strict();
 export const deleteSchema = z
@@ -203,6 +224,11 @@ export type Item = {
   updatedAt: string;
   sourceUrl: string;
   hasImage: boolean;
+  reviewedTranscription?: string | null;
+  transcriptionUpdatedAt?: string | null;
+  transcriptionProvenance?: "original" | "reviewed";
+  matchType?: "keyword" | "semantic" | "both";
+  matchSnippet?: string;
 };
 export type Source = {
   id: string;
@@ -220,6 +246,7 @@ export type SearchResult = {
   counts: Record<string, number>;
   categories: string[];
   aiAvailable: boolean;
+  aiSearchEnabled?: boolean;
   mode: "keyword" | "semantic" | "hybrid";
   searchNotice?: string;
 };

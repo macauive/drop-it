@@ -425,10 +425,28 @@ test("migration seven preserves legacy sessions and is idempotent", async () => 
     await legacyDb.query(
       "CREATE TABLE sessions(hash text PRIMARY KEY,owner uuid NOT NULL REFERENCES users(id),expires_at timestamptz NOT NULL)",
     );
+    // Later migrations also touch library tables. Keep a legacy library row
+    // in this isolated fixture instead of pretending versions 1–6 had none.
+    await legacyDb.query(`CREATE TABLE sources (
+      id uuid PRIMARY KEY, owner uuid NOT NULL REFERENCES users(id),
+      original_text text NOT NULL, url text NOT NULL, attachment_id uuid)`);
+    await legacyDb.query(`CREATE TABLE items (
+      id uuid PRIMARY KEY, owner uuid NOT NULL REFERENCES users(id),
+      source_id uuid NOT NULL REFERENCES sources(id), title text NOT NULL)`);
     await legacyDb.query("INSERT INTO users(id,password_hash) VALUES($1,$2)", [
       owner,
       originalHash,
     ]);
+    const legacySource = randomUUID(),
+      legacyItem = randomUUID();
+    await legacyDb.query(
+      "INSERT INTO sources(id,owner,original_text,url) VALUES($1,$2,'Synthetic legacy text','https://example.test/legacy#section')",
+      [legacySource, owner],
+    );
+    await legacyDb.query(
+      "INSERT INTO items(id,owner,source_id,title) VALUES($1,$2,$3,'Synthetic legacy drop')",
+      [legacyItem, owner, legacySource],
+    );
     const legacyToken = randomBytes(32).toString("base64url");
     await legacyDb.query(
       "INSERT INTO sessions(hash,owner,expires_at) VALUES($1,$2,now()+interval '6 days')",
@@ -442,8 +460,42 @@ test("migration seven preserves legacy sessions and is idempotent", async () => 
     assert.equal(snapshot.sessions[0].current, true);
     assert.notEqual(snapshot.sessions[0].id, legacyToken);
     assert.equal(snapshot.recoveryEnabled, false);
+    assert.deepEqual(
+      (
+        await legacyDb.query(
+          "SELECT original_text,url,normalized_url FROM sources WHERE id=$1",
+          [legacySource],
+        )
+      ).rows[0],
+      {
+        original_text: "Synthetic legacy text",
+        url: "https://example.test/legacy#section",
+        normalized_url: "https://example.test/legacy",
+      },
+    );
+    assert.deepEqual(
+      (
+        await legacyDb.query(
+          "SELECT title,reviewed_transcription,transcription_updated_at FROM items WHERE id=$1",
+          [legacyItem],
+        )
+      ).rows[0],
+      {
+        title: "Synthetic legacy drop",
+        reviewed_transcription: null,
+        transcription_updated_at: null,
+      },
+    );
     await migrate(legacyDb);
     assert.deepEqual(await legacyAuth.security(owner, legacyToken), snapshot);
+    assert.deepEqual(
+      (
+        await legacyDb.query(
+          "SELECT version FROM schema_migrations ORDER BY version",
+        )
+      ).rows,
+      Array.from({ length: 9 }, (_, index) => ({ version: index + 1 })),
+    );
   } finally {
     await legacyDb.close();
     await rm(legacyDir, { recursive: true, force: true });

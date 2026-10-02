@@ -111,6 +111,37 @@ test("a protected JSON401 signals session loss while preserving the caller's typ
     assert.equal(eventCount(), 1);
   }));
 
+test("code-less HTTP errors preserve bounded public guidance and reject malformed payloads", () =>
+  withClient(async ({ client, setFetch, eventCount }) => {
+    for (const [status, message] of [
+      [403, "Request origin was not accepted."],
+      [413, "The upload is too large."],
+      [400, "Invalid request body."],
+    ] as const) {
+      setFetch(async () => Response.json({ error: message }, { status }));
+      await assert.rejects(client.api("/api/settings"), (error: unknown) => {
+        assert.ok(error instanceof client.ClientError);
+        assert.equal(error.message, message);
+        assert.equal(error.code, undefined);
+        return true;
+      });
+    }
+    for (const payload of [
+      { error: { message: "Malformed nested error" } },
+      { error: "x".repeat(1001) },
+      { error: "Untrusted internal error", private: "must not leak" },
+    ]) {
+      setFetch(async () => Response.json(payload, { status: 500 }));
+      await assert.rejects(client.api("/api/settings"), (error: unknown) => {
+        assert.ok(error instanceof client.ClientError);
+        assert.equal(error.message, "The action could not be completed. Try again.");
+        assert.equal(error.details, undefined);
+        return true;
+      });
+    }
+    assert.equal(eventCount(), 0);
+  }));
+
 test("file uploads use the same session-loss lifecycle and preserve their upload error", () =>
   withClient(async ({ client, setFetch, eventCount }) => {
     const file = new File(["Synthetic upload"], "fixture notes.txt", {

@@ -54,6 +54,7 @@ export async function semanticRank(
   owner: string,
   query: string,
   documents: SearchDocument[],
+  allowed: () => Promise<boolean> = async () => true,
 ) {
   if (!documents.length) return [];
   const model = `${embeddingModel}:${dimensions}:v1`;
@@ -80,6 +81,14 @@ export async function semanticRank(
     else pending.push({ doc, text, fingerprint });
   }
   const deadline = Date.now() + 45000;
+  const checkPermission = async () => {
+    if (!(await allowed()))
+      throw new AppError(
+        403,
+        "AI_DISABLED",
+        "AI search is turned off in Settings.",
+      );
+  };
   for (let offset = 0; offset < pending.length; offset += 32) {
     if (Date.now() > deadline)
       throw new AppError(
@@ -87,6 +96,7 @@ export async function semanticRank(
         "AI_INDEXING",
         "Search indexing is still in progress. Retry to continue, or use keyword search.",
       );
+    await checkPermission();
     const batch = pending.slice(offset, offset + 32),
       embedded = await ai.embed(batch.map((entry) => entry.text));
     if (embedded.length !== batch.length)
@@ -103,11 +113,13 @@ export async function semanticRank(
       await db.query(
         `INSERT INTO item_embeddings(owner,item_id,model,fingerprint,vector)
         SELECT owner,id,$3,$4,$5 FROM items WHERE owner=$1 AND id=$2 AND revision=$6
+          AND EXISTS(SELECT 1 FROM users WHERE id=$1 AND ai_search_enabled=true)
         ON CONFLICT(owner,item_id) DO UPDATE SET model=EXCLUDED.model,fingerprint=EXCLUDED.fingerprint,vector=EXCLUDED.vector`,
         [owner, doc.id, model, fingerprint, vector, doc.revision],
       );
     }
   }
+  await checkPermission();
   const [rawQuery] = await ai.embed([query]);
   const queryVector = vectorSchema.parse(rawQuery);
   return documents

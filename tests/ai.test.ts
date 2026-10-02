@@ -60,6 +60,8 @@ before(async () => {
     [owner, other, randomBytes(32).toString("hex")],
   );
   library = new Library(db, mock);
+  // Search tests deliberately exercise the explicitly enabled AI path.
+  await library.setPreferences(owner, { aiSearchEnabled: true });
 });
 after(async () => {
   await db?.close();

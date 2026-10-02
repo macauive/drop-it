@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Synthetic widget host</title>
+    <style>
+      body {
+        font: 14px system-ui;
+        margin: 16px;
+        background: #f1f4f7;
+        color: #18242d;
+      }
+      h1 {
+        font-size: 20px;
+      }
+      button,
+      select {
+        font: inherit;
+        padding: 7px;
+        margin: 3px;
+      }
+      section {
+        background: white;
+        border: 1px solid #ccd3db;
+        padding: 10px;
+        margin: 8px 0;
+      }
+      #stage iframe {
+        width: 100%;
+        height: 790px;
+        border: 1px solid #76899d;
+        background: white;
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 300px;
+        overflow: auto;
+      }
+      #status {
+        font-weight: 600;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 3px;
+      }
+      summary {
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Synthetic widget host · local only</h1>
+    <p>
+      Actual built React app and installed MCP AppBridge; synthetic in-memory
+      tools. Nothing is sent to an external provider. Choose only the supplied
+      widget-file-b.txt fixture.
+    </p>
+    <section>
+      <div class="controls">
+        <button id="reset-normal">Reset connected widget</button
+        ><button id="reset-timeout">Reset without host (15 s timeout)</button
+        ><button id="enable-host">Enable host for Retry</button
+        ><button id="inject-empty">Inject empty search</button
+        ><button id="inject-search">Inject filtered page (offset 2)</button
+        ><button id="inject-draft">Inject unsaved draft A</button
+        ><button id="inject-detail">Inject detail A with original</button
+        ><button id="inject-detail-bare">Inject detail A without bytes</button
+        ><button id="cancel-tool">Notify cancelled tool</button>
+      </div>
+      <div class="controls">
+        <label
+          >Delay next tool
+          <select id="delay-tool">
+            <option value="any">Any</option>
+            <option>save_drop</option>
+            <option>update_drop</option>
+            <option>get_drop</option>
+            <option>wipe_drop</option>
+            <option>restore_drop</option>
+            <option>upload_source</option>
+          </select></label
+        ><button id="hold-next">Arm delay</button
+        ><button id="release-success">Release success</button
+        ><button id="release-failure">Release failure</button
+        ><button id="clear-log">Clear request log</button>
+      </div>
+      <p id="status" role="status">Starting</p>
+      <pre id="counts"></pre>
+    </section>
+    <div id="stage"></div>
+    <section>
+      <details open>
+        <summary>Exact tool requests and pending operations</summary>
+        <pre id="requests"></pre>
+      </details>
+      <details>
+        <summary>Current synthetic records and retained widget state</summary>
+        <pre id="records"></pre>
+      </details>
+      <p>
+        Expected filtered search: query synthetic, Saved, Testing, tag fixture,
+        after 2026-09-01T12:34:56.789Z, before 2026-10-01T12:34:56.789Z, limit
+        2; initial offset 2. Initial hydration and reconnect must issue zero
+        search calls.
+      </p>
+    </section>
+    <script src="/host.js"></script>
+  </body>
+</html>

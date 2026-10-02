@@ -1,7 +1,4 @@
-import { App } from "@modelcontextprotocol/ext-apps";
 import type {
-  Item,
-  Source,
   SearchInput,
   SearchResult,
   SaveInput,
@@ -9,18 +6,25 @@ import type {
 } from "../shared/schema.js";
 import { fileMime } from "../shared/files.js";
 import { downloadOriginal } from "./download.js";
-
-type FileRef = { fileId: string; fileName?: string; mimeType?: string };
-declare global {
-  interface Window {
-    openai?: {
-      uploadFile?: (file: File) => Promise<FileRef>;
-      getFileDownloadUrl?: (input: {
-        fileId: string;
-      }) => Promise<{ downloadUrl: string }>;
-    };
-  }
-}
+import {
+  callEmbedded as call,
+  getEmbeddedBridge,
+  ClientError,
+  responseError,
+  type Detail,
+} from "./embedded.js";
+export {
+  ClientError,
+  connectEmbedded,
+  getEmbeddedState,
+  subscribeEmbedded,
+  requestEmbeddedFullscreen,
+  readEmbeddedView,
+  rememberEmbeddedView,
+  type Detail,
+  type EmbeddedState,
+  type EmbeddedPresentation,
+} from "./embedded.js";
 export const embedded = window.parent !== window;
 const publicAuthPaths = new Set([
   "/api/login",
@@ -59,84 +63,6 @@ export async function browserRequest(path: string, options: RequestInit = {}) {
   }
   return response;
 }
-export class ClientError extends Error {
-  constructor(
-    message: string,
-    public code?: string,
-  ) {
-    super(message);
-  }
-}
-type Detail = {
-  item: Item;
-  source: Source;
-  imageData?: string;
-  fileData?: string;
-  downloadPageUrl?: string;
-};
-type ToolResponse = {
-  structuredContent?: Record<string, unknown>;
-  isError?: boolean;
-  _meta?: Record<string, unknown>;
-};
-let bridge: App | undefined;
-let connection: Promise<void> | undefined;
-async function connect() {
-  if (!connection) {
-    bridge = new App(
-      { name: "drop-it-library", version: "0.1.0" },
-      {},
-      { autoResize: true },
-    );
-    bridge.ontoolresult = (result) =>
-      window.dispatchEvent(
-        new CustomEvent("dropit:result", { detail: result.structuredContent }),
-      );
-    connection = Promise.race([
-      bridge.connect(),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () =>
-            reject(
-              new Error("The ChatGPT connection timed out. Reopen Drop It."),
-            ),
-          15000,
-        ),
-      ),
-    ]);
-  }
-  return connection;
-}
-async function call<T>(
-  name: string,
-  args: Record<string, unknown>,
-): Promise<T> {
-  await connect();
-  const result = (await bridge!.callServerTool({
-    name,
-    arguments: args,
-  })) as ToolResponse;
-  const data = result.structuredContent;
-  if (result.isError || !data)
-    throw new ClientError(
-      typeof data?.error === "string"
-        ? data.error
-        : "The action could not be completed.",
-      typeof data?.code === "string" ? data.code : undefined,
-    );
-  return {
-    ...data,
-    ...(typeof result._meta?.imageData === "string"
-      ? { imageData: result._meta.imageData }
-      : {}),
-    ...(typeof result._meta?.fileData === "string"
-      ? { fileData: result._meta.fileData }
-      : {}),
-    ...(typeof result._meta?.downloadPageUrl === "string"
-      ? { downloadPageUrl: result._meta.downloadPageUrl }
-      : {}),
-  } as T;
-}
 export async function api<T>(
   path: string,
   method = "GET",
@@ -147,12 +73,17 @@ export async function api<T>(
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const result = await response.json();
-  if (!response.ok)
+  let result;
+  try {
+    result = await response.json();
+  } catch {
     throw new ClientError(
-      result.error ?? "The action could not be completed.",
-      result.code,
+      "The server response could not be read. Try again.",
+      "INVALID_RESPONSE",
     );
+  }
+  if (!response.ok)
+    throw responseError({ isError: true, structuredContent: result });
   return result;
 }
 export const client = {
@@ -163,8 +94,11 @@ export const client = {
     const data = detail.fileData ?? detail.imageData;
     if (!data || !detail.source.filename)
       throw new Error("The original file is no longer available.");
+    const bridge = getEmbeddedBridge();
+    if (!bridge)
+      throw new ClientError("The connection closed. Retry to reconnect.");
     return downloadOriginal(
-      bridge!,
+      bridge,
       data,
       detail.source.filename,
       detail.downloadPageUrl,

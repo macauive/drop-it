@@ -21,7 +21,14 @@ const html = await readFile(
   new URL("../dist/web/index.html", import.meta.url),
   "utf8",
 );
-const { app } = createApp(db, config, html);
+const { app, close } = createApp(db, config, html);
+const closeResources = async () => {
+  try {
+    await close();
+  } finally {
+    await db.close();
+  }
+};
 const server = app.listen(
   config.port,
   config.local ? "127.0.0.1" : "0.0.0.0",
@@ -29,12 +36,29 @@ const server = app.listen(
 );
 server.on("error", () => {
   console.error("Could not start Drop It. Check the configured port.");
-  void db.close().finally(() => process.exit(1));
+  void closeResources().finally(() => process.exit(1));
 });
+let shuttingDown = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.once(signal, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     clearInterval(maintenance);
+    // Never keep a draining deployment alive indefinitely on a stalled socket
+    // or database. In-flight transactions are rolled back on disconnection.
+    const deadline = setTimeout(() => process.exit(1), 20000);
+    deadline.unref();
     server.close(() => {
-      void db.close().then(() => process.exit(0));
+      void closeResources().then(
+        () => {
+          clearTimeout(deadline);
+          process.exit(0);
+        },
+        () => {
+          clearTimeout(deadline);
+          process.exit(1);
+        },
+      );
     });
+    server.closeIdleConnections();
   });
