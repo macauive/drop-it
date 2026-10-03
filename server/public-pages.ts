@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { z } from "zod";
+import { renderAboutPage } from "./about-page.js";
 
 export const publicSiteSchema = z
   .object({
@@ -29,12 +30,12 @@ export function addPublicPages(app: Express, site?: PublicSite) {
     }
     const publisher = escape(site.publisher),
       email = escape(site.supportEmail);
+    if (req.path === "/about") {
+      res.type("html").send(renderAboutPage(publisher));
+      return;
+    }
     const contact = `<a href="mailto:${email}">${email}</a>`;
     const pages: Record<string, { title: string; body: string }> = {
-      "/about": {
-        title: "Keep what matters.",
-        body: `<p>Drop It is your private saved-for-later library for ideas, links, screenshots and supported files.</p><p>Save material you choose to share, search your library, revisit original sources, and organize drops with notes, pools and bookmarks.</p><p>Use the web app or connect your account in ChatGPT. Links are saved without automatically fetching their pages. AI-generated details are suggestions to review.</p><p><a href="/">Open your library</a></p><p>Published by ${publisher}.</p>`,
-      },
       "/support": {
         title: "Support",
         body: `<p>Contact ${publisher}: ${contact}.</p><p>Describe the issue and any non-sensitive error message. Do not email your password, recovery code, API key, private files or full library export.</p><p>To recover an account, use your saved recovery code on the sign-in screen. Drop It does not offer email-based password recovery.</p><p>Settings provides library export and previewed import, storage usage, AI search preferences, password changes, recovery codes, session controls, app disconnection and permanent account deletion. All drops contains your created drops; Saved is a bookmark filter. When registration is closed, contact support to request access.</p>`,
