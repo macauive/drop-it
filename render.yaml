@@ -21,9 +21,9 @@ services:
       - key: PUBLIC_URL
         value: https://dontdropit.app
       - key: PUBLIC_SUPPORT_EMAIL
-        value: macdigitalsolutions@protonmail.com
+        value: info@macdigital.ai
       - key: PUBLIC_PUBLISHER_NAME
-        value: Iver Macaulay
+        value: Mac Digital AI
       - key: BACKUP_RETENTION_DAYS
         value: "7"
       - key: DATABASE_URL
