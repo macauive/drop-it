@@ -1,4 +1,5 @@
 import type { Express } from "express";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { renderAboutPage } from "./about-page.js";
 
@@ -19,6 +20,22 @@ const escape = (value: string) =>
       ]!,
   );
 export function addPublicPages(app: Express, site?: PublicSite) {
+  // Only this synthetic-data review asset is public, never library uploads.
+  app.get("/review/walkthrough-2026-10-03.mp4", (_req, res, next) => {
+    if (!site) {
+      res.status(404).end();
+      return;
+    }
+    res.set("X-Robots-Tag", "noindex, nofollow").sendFile(
+      fileURLToPath(
+        new URL("../release/review/walkthrough-2026-10-03.mp4", import.meta.url),
+      ),
+      { maxAge: "1d", dotfiles: "deny" },
+      (error) => {
+        if (error) next(error);
+      },
+    );
+  });
   const paths = ["/about", "/support", "/privacy", "/terms"];
   app.get(paths, (req, res) => {
     if (!site) {
