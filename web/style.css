@@ -295,6 +295,11 @@ p {
   padding: 0 36px;
   gap: 16px;
 }
+@media (min-width: 651px) {
+  .app:not(.embedded) .topbar {
+    padding-left: 12px;
+  }
+}
 .breadcrumb {
   font-size: 12px;
   color: var(--muted);
@@ -353,11 +358,6 @@ p {
   background: #f0f2f4;
   color: var(--muted);
   padding: 0 6px;
-}
-.saved-caption {
-  font-size: 12px;
-  color: var(--muted);
-  padding-bottom: 4px;
 }
 .filters {
   display: flex;
@@ -582,7 +582,6 @@ html[data-theme="dark"] .layout-icon .drop-preview {
   background: var(--surface);
 }
 @media (max-width: 600px) {
-  .heading-actions .saved-caption { display: none; }
   .layout-icon { grid-template-columns: repeat(auto-fill, minmax(min(100%, 155px), 1fr)); gap: 12px; }
 }
 .item-row {
@@ -1285,9 +1284,6 @@ html[data-theme="dark"] .layout-icon .drop-preview {
 .embedded .footer {
   padding: 15px 22px;
 }
-.embedded .saved-caption {
-  display: none;
-}
 @media (max-width: 900px) {
   .sidebar {
     width: 185px;
@@ -1299,9 +1295,6 @@ html[data-theme="dark"] .layout-icon .drop-preview {
   }
   .library-content {
     padding: 32px 24px;
-  }
-  .saved-caption {
-    display: none;
   }
   .item-date {
     display: none;

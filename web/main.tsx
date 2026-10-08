@@ -1006,7 +1006,6 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
               </h1>
             </div>
             <div className="heading-actions">
-              <span className="saved-caption">Good things, kept.</span>
               <LayoutSwitcher value={layout} onChange={(value) => {
                 setLayout(value);
                 rememberLayout(value);
