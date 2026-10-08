@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f7f8fa" />
+    <script>
+      // Embedded widgets receive their theme from the host instead.
+      if (window.parent === window) {
+        const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+        const applySystemTheme = () => {
+          document.documentElement.dataset.theme = systemTheme.matches
+            ? "dark"
+            : "light";
+          document.querySelector('meta[name="theme-color"]').content =
+            systemTheme.matches ? "#090a0b" : "#f7f8fa";
+        };
+        applySystemTheme();
+        systemTheme.addEventListener("change", applySystemTheme);
+      }
+    </script>
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/x-icon" href="./favicon.ico?inline" />
     <link rel="icon" type="image/svg+xml" sizes="any" href="./favicon.svg?inline" />
