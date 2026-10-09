@@ -11,9 +11,6 @@ export function renderAboutPage(publisher: string) {
   const search = icon(
     '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   );
-  const lock = icon(
-    '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v3"/>',
-  );
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -132,25 +129,6 @@ export function renderAboutPage(publisher: string) {
       align-items: center;
       padding-block: 90px 76px;
     }
-    .eyebrow {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      font-size: 11px;
-      line-height: 1.5;
-      font-weight: 700;
-      letter-spacing: 1.8px;
-      text-transform: uppercase;
-      color: var(--blue);
-      margin-bottom: 24px;
-    }
-    .eyebrow::before {
-      content: "";
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: currentColor;
-    }
     h1 {
       font-size: clamp(46px, 5.2vw, 68px);
       letter-spacing: -3.5px;
@@ -189,11 +167,6 @@ export function renderAboutPage(publisher: string) {
     }
     .hero .button {
       margin-top: 30px;
-    }
-    .availability {
-      margin-top: 14px;
-      font-size: 12px;
-      color: var(--muted);
     }
     .collection {
       position: relative;
@@ -476,9 +449,6 @@ export function renderAboutPage(publisher: string) {
         font-size: 52px;
         letter-spacing: -2.5px;
       }
-      .eyebrow {
-        margin-bottom: 20px;
-      }
       .intro {
         font-size: 16px;
         margin-top: 22px;
@@ -557,11 +527,9 @@ export function renderAboutPage(publisher: string) {
   <main id="main" class="container">
     <section class="hero" aria-labelledby="about-title">
       <div>
-        <div class="eyebrow">A little less lost</div>
         <h1 id="about-title">Keep what<br><span>matters.</span></h1>
         <p class="intro">Good ideas deserve more than an open tab. Give your links, notes, screenshots and files a private place to land.</p>
         <a class="button" href="/">Open your library ${arrow}</a>
-        <p class="availability">On the web. Connected to ChatGPT when you choose.</p>
       </div>
       <div class="collection" role="group" aria-label="Example drops in a library">
         <div class="collection-heading"><span>A few things worth keeping</span>${drop}</div>
@@ -595,7 +563,7 @@ export function renderAboutPage(publisher: string) {
       <article class="feature"><span class="feature-icon">${search}</span><h3>Find your way back.</h3><p>Search your library and revisit the source. Connect ChatGPT to work with your drops in a conversation.</p></article>
     </section>
     <section class="privacy" aria-labelledby="privacy-title">
-      <div><div class="eyebrow">${lock} Yours to control</div><h2 id="privacy-title">Your library. Your call.</h2><p>A private space for what you choose to keep, with controls for how you use it.</p><a href="/privacy">Read the privacy policy &rarr;</a></div>
+      <div><h2 id="privacy-title">Your personal library</h2><p>A private space for what you choose to keep, with controls for how you use it.</p><a href="/privacy">Read the privacy policy &rarr;</a></div>
       <ul><li>Save only what you choose to share. Saved links aren’t automatically fetched.</li><li>AI-generated details are suggestions to review. AI search is off by default.</li><li>Export your library, manage connected apps, or delete your account in Settings.</li></ul>
     </section>
   </main>
