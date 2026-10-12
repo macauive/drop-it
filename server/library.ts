@@ -471,9 +471,10 @@ export class Library {
       where.push(expression.replace("?", `$${params.length}`));
     };
     const semantic = q.mode !== "keyword" && Boolean(q.query);
+    const terms = q.query.toLowerCase().split(/\s+/).slice(0, 12);
     if (q.query && !semantic) {
       // Literal substring terms: SQL wildcards from input do not widen the search.
-      for (const term of q.query.toLowerCase().split(/\s+/).slice(0, 12)) {
+      for (const term of terms) {
         add(
           `strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,COALESCE(i.reviewed_transcription,s.original_text),s.url)),?)>0`,
           term,
@@ -495,9 +496,29 @@ export class Library {
       `SELECT count(*) FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE ${filtered}`,
       params,
     );
+    const resultParams = [...params];
+    let order = "i.created_at DESC,i.id";
+    if (q.query && !semantic) {
+      resultParams.push(q.query.toLowerCase(), terms);
+      const phrase = `$${params.length + 1}`;
+      const termList = `$${params.length + 2}::text[]`;
+      const matches = (expression: string) =>
+        `(SELECT count(*) FROM unnest(${termList}) AS term WHERE strpos(lower(${expression}),term)>0) DESC`;
+      order = [
+        `(lower(i.title)=${phrase}) DESC`,
+        `(strpos(lower(i.title),${phrase})>0) DESC`,
+        matches("i.title"),
+        matches("array_to_string(i.tags,' ')"),
+        matches("i.summary"),
+        matches(
+          "concat_ws(' ',i.notes,COALESCE(i.reviewed_transcription,s.original_text),s.url)",
+        ),
+        order,
+      ].join(",");
+    }
     let { rows: items } = await this.db.query<SearchItem>(
-      `${q.query ? searchSelection : selection} WHERE ${filtered} ORDER BY i.created_at DESC,i.id LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-      [...params, q.limit, q.offset],
+      `${q.query ? searchSelection : selection} WHERE ${filtered} ORDER BY ${order} LIMIT $${resultParams.length + 1} OFFSET $${resultParams.length + 2}`,
+      [...resultParams, q.limit, q.offset],
     );
     let resultTotal = Number(total.rows[0].count);
     if (semantic) {
@@ -523,7 +544,7 @@ export class Library {
             NOT EXISTS (SELECT 1 FROM unnest($${params.length + 1}::text[]) AS term
               WHERE strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,COALESCE(i.reviewed_transcription,s.original_text),s.url)),term)=0) AS "keywordMatch"
             FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE ${filtered} ORDER BY i.id`,
-            [...params, q.query.toLowerCase().split(/\s+/).slice(0, 12)],
+            [...params, terms],
           );
           docs = result.rows;
           return semanticRank(

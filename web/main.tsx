@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { DropPreview } from "./drop-preview.js";
+import { suggestCaptureTitle } from "./capture-title.js";
 import { poolTone } from "./pool-colors.js";
 import {
   LayoutSwitcher,
@@ -626,7 +627,8 @@ function Consent({ id }: { id: string }) {
 
 function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
   const [layout, setLayout] = useState(readLayout);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+  const [sidebarCollapsed, setSidebarCollapsed] =
+    useState(readSidebarCollapsed);
   const [searchDraft, setSearchDraft] = useState("");
   const [query, setQuery] = useState(""),
     [view, setView] = useState<(typeof views)[number]>(() =>
@@ -826,6 +828,14 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
     setHasRequestedSearch(true);
     if (embedded) rememberEmbeddedView(value);
   };
+  const searchAllDrops = () => {
+    setCategory("");
+    setTag("");
+    setTagDraft("");
+    setAfter("");
+    setBefore("");
+    changeView("All drops");
+  };
   const clearFilters = () => {
     setSearchDraft("");
     setQuery("");
@@ -864,8 +874,44 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
     }
   };
   const total = (data.counts["All drops"] ?? 0) + (data.counts.Trash ?? 0);
+  const hasScopeFilters = Boolean(
+    view !== "All drops" || category || tag || after || before,
+  );
+  const hasSearch = Boolean(query || hasScopeFilters);
+  const filters = [
+    ...(view !== "All drops"
+      ? [{ label: view, remove: () => changeView("All drops") }]
+      : []),
+    ...(category
+      ? [{ label: `Pool: ${category}`, remove: () => setCategory("") }]
+      : []),
+    ...(tag
+      ? [
+          {
+            label: `Tag: ${tag}`,
+            remove: () => {
+              setTag("");
+              setTagDraft("");
+            },
+          },
+        ]
+      : []),
+    ...(after
+      ? [{ label: `From: ${after.slice(0, 10)}`, remove: () => setAfter("") }]
+      : []),
+    ...(before
+      ? [
+          {
+            label: `Through: ${before.slice(0, 10)}`,
+            remove: () => setBefore(""),
+          },
+        ]
+      : []),
+  ];
   return (
-    <div className={`app ${embedded ? "embedded" : ""} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <div
+      className={`app ${embedded ? "embedded" : ""} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
+    >
       <aside className="sidebar" id="library-sidebar">
         <Brand />
         <span className="sidebar-label">LIBRARY</span>
@@ -893,7 +939,12 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
         </nav>
         <div className="sidebar-bottom">
           {!embedded && (
-            <button className="nav-item" onClick={signOut} aria-label="Sign out" title="Sign out">
+            <button
+              className="nav-item"
+              onClick={signOut}
+              aria-label="Sign out"
+              title="Sign out"
+            >
               <LogOut size={16} />
               <span className="nav-label">Sign out</span>
             </button>
@@ -903,11 +954,14 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
       <main className="workspace">
         <header className="topbar">
           <div className="topbar-leading">
-            <SidebarToggle collapsed={sidebarCollapsed} onToggle={() => {
-              const next = !sidebarCollapsed;
-              setSidebarCollapsed(next);
-              rememberSidebarCollapsed(next);
-            }} />
+            <SidebarToggle
+              collapsed={sidebarCollapsed}
+              onToggle={() => {
+                const next = !sidebarCollapsed;
+                setSidebarCollapsed(next);
+                rememberSidebarCollapsed(next);
+              }}
+            />
             <span className="breadcrumb">
               Library <span>/</span> <strong>{view}</strong>
             </span>
@@ -1006,10 +1060,13 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
               </h1>
             </div>
             <div className="heading-actions">
-              <LayoutSwitcher value={layout} onChange={(value) => {
-                setLayout(value);
-                rememberLayout(value);
-              }} />
+              <LayoutSwitcher
+                value={layout}
+                onChange={(value) => {
+                  setLayout(value);
+                  rememberLayout(value);
+                }}
+              />
             </div>
           </div>
           {view === "Trash" && (
@@ -1106,6 +1163,28 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
               <ChevronDown size={14} />
             </label>
           </form>
+          <div className="search-scope" aria-label="Search scope">
+            <span>
+              Searching{" "}
+              {view === "All drops" ? "all drops" : view.toLowerCase()}
+            </span>
+            {filters.map((filter) => (
+              <button
+                type="button"
+                className="filter-chip"
+                key={filter.label}
+                aria-label={`Remove filter ${filter.label}`}
+                onClick={() => {
+                  filter.remove();
+                  setOffset(0);
+                  setHasRequestedSearch(true);
+                }}
+              >
+                {filter.label}
+                <X size={13} aria-hidden="true" />
+              </button>
+            ))}
+          </div>
           <details className="search-options">
             <summary>Search options</summary>
             <div className="form-grid">
@@ -1320,20 +1399,31 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                 <FolderOpen size={32} />
               </span>
               <h2>
-                {total
-                  ? "Nothing here just yet."
-                  : "Your next good idea goes here."}
+                {hasSearch
+                  ? "No matching drops"
+                  : total
+                    ? "Nothing here just yet."
+                    : "Your next good idea goes here."}
               </h2>
               <p>
-                {total
-                  ? "No drops match this view."
-                  : "Keep the link. Save the screenshot. Come back to it."}
+                {hasSearch
+                  ? query
+                    ? `No results for “${query}” in this search scope.`
+                    : "No drops match these filters."
+                  : total
+                    ? "No drops match this view."
+                    : "Keep the link. Save the screenshot. Come back to it."}
               </p>
+              {hasScopeFilters && (
+                <button onClick={searchAllDrops}>Search all drops</button>
+              )}
               <button
                 className="primary"
-                onClick={() => (total ? clearFilters() : setAdding(true))}
+                onClick={() =>
+                  hasSearch || total ? clearFilters() : setAdding(true)
+                }
               >
-                {total ? (
+                {hasSearch || total ? (
                   "Clear filters"
                 ) : (
                   <>
@@ -2016,6 +2106,13 @@ function Capture({
   const [drafted, setDrafted] = useState(Boolean(initial)),
     [drafting, setDrafting] = useState(false);
   const [manual, setManual] = useState(Boolean(initial || shared));
+  const [titleEdited, setTitleEdited] = useState(false);
+  const captureTitle = titleEdited
+    ? title
+    : title || suggestCaptureTitle(text, url, file?.name);
+  const hasSource = Boolean(
+    text.trim() || url.trim() || file || retainedAttachmentId,
+  );
   const [storageRemaining, setStorageRemaining] = useState<number | null>(null);
   useEffect(() => {
     if (!embedded)
@@ -2176,7 +2273,7 @@ function Capture({
     try {
       const source = await sourceInput();
       const fields = {
-        title,
+        title: captureTitle,
         summary,
         category: category.trim() || undefined,
         tags: tags
@@ -2241,14 +2338,7 @@ function Capture({
               drop.
             </p>
           )}
-          <div className="capture-options">
-            <button type="button" onClick={() => setManual(true)}>
-              Text or link
-            </button>
-            <span className="field-note">
-              Choose a file below, or paste an image.
-            </span>
-          </div>
+          <p className="field-note">Choose a file below, or paste an image.</p>
           {storageRemaining !== null && (
             <p className="field-note">
               {bytesLabel(Math.max(0, storageRemaining))} attachment space
@@ -2256,7 +2346,7 @@ function Capture({
             </p>
           )}
           <label
-            className={`upload-area ${file || retainedAttachmentId ? "has-file" : ""}`}
+            className={`upload-area ${file || retainedAttachmentId ? "has-file" : manual ? "compact-upload" : ""}`}
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
               e.preventDefault();
@@ -2331,12 +2421,14 @@ function Capture({
               {drafting && (
                 <div className="draft-actions" role="status">
                   <Busy />
-                  <span>Drafting...</span>
+                  <span>Generating...</span>
                 </div>
               )}
               {drafted && (
                 <section className="draft-preview" aria-label="File draft">
-                  <span className="field-note">AI draft · Not created</span>
+                  <span className="field-note">
+                    Generated fields · Not created
+                  </span>
                   <h3>{title}</h3>
                   <p>{summary}</p>
                   <label>
@@ -2381,15 +2473,15 @@ function Capture({
                 {file && !drafted && !drafting && aiAvailable && (
                   <button type="button" onClick={() => void draft(file)}>
                     <Sparkles size={16} />
-                    Retry draft
+                    Retry generation
                   </button>
                 )}
               </div>
               {!drafted && !drafting && (
                 <span className="field-note">
                   {aiAvailable
-                    ? "Files are processed with OpenAI. PDFs: up to 30 pages. Text: up to 50,000 characters."
-                    : "AI is unavailable. Enter details manually."}
+                    ? "Generate editable fields from your file. PDFs: up to 30 pages. Text: up to 50,000 characters."
+                    : "Field generation is unavailable. Enter details manually."}
                 </span>
               )}
             </>
@@ -2407,7 +2499,7 @@ function Capture({
                 />
               </label>
               <label>
-                Text / file transcription
+                {file || retainedAttachmentId ? "Review transcription" : "Text"}
                 <textarea
                   value={text}
                   onChange={(e) => {
@@ -2419,74 +2511,89 @@ function Capture({
                   rows={4}
                 />
               </label>
-              <div className="draft-actions">
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => void draft()}
-                  disabled={
-                    !aiAvailable ||
-                    (!text.trim() &&
-                      !url.trim() &&
-                      !file &&
-                      !retainedAttachmentId)
-                  }
-                >
-                  {drafting ? <Busy /> : <Sparkles size={16} />}
-                  {drafting ? "Drafting..." : "Draft with AI"}
-                </button>
-                <span className="field-note">
-                  {!aiAvailable
-                    ? "AI is not configured."
-                    : drafted
-                      ? "AI draft · Not created"
-                      : "Processes this source with OpenAI."}
-                </span>
-              </div>
+              {(file || retainedAttachmentId) && (
+                <p className="field-note">
+                  Review extracted text for search. The original file is
+                  preserved separately.
+                </p>
+              )}
               <label>
                 Title
                 <input
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="Something worth coming back to"
+                  value={captureTitle}
+                  onChange={(e) => {
+                    setTitle(e.target.value);
+                    setTitleEdited(true);
+                  }}
+                  placeholder="Suggested from your source"
                   required
                   maxLength={200}
                 />
               </label>
-              <label>
-                Summary
-                <textarea
-                  value={summary}
-                  onChange={(e) => setSummary(e.target.value)}
-                  maxLength={4000}
-                  rows={2}
-                />
-              </label>
-              <div className="form-grid">
-                <CategoryField
-                  value={category}
-                  onChange={setCategory}
-                  categories={categories}
-                />
+              <details className="capture-details" open={Boolean(initial)}>
+                <summary>Add details</summary>
+                <div className="draft-actions">
+                  <button
+                    type="button"
+                    onClick={() => void draft()}
+                    disabled={
+                      !aiAvailable ||
+                      (!text.trim() &&
+                        !url.trim() &&
+                        !file &&
+                        !retainedAttachmentId)
+                    }
+                  >
+                    {drafting ? <Busy /> : <Sparkles size={16} />}
+                    {drafting
+                      ? "Generating..."
+                      : drafted
+                        ? "Update fields"
+                        : "Generate fields"}
+                  </button>
+                  <span className="field-note">
+                    {!aiAvailable
+                      ? "Field generation is unavailable."
+                      : drafted
+                        ? "Generated fields · Not created"
+                        : "Fill in details from your source."}
+                  </span>
+                </div>
                 <label>
-                  Tags
-                  <input
-                    value={tags}
-                    onChange={(e) => setTags(e.target.value)}
-                    placeholder="python, weekend"
-                    maxLength={480}
+                  Summary
+                  <textarea
+                    value={summary}
+                    onChange={(e) => setSummary(e.target.value)}
+                    maxLength={4000}
+                    rows={2}
                   />
                 </label>
-              </div>
-              <label>
-                My notes
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  maxLength={8000}
-                  rows={2}
-                />
-              </label>
+                <div className="form-grid">
+                  <CategoryField
+                    value={category}
+                    onChange={setCategory}
+                    categories={categories}
+                  />
+                  <label>
+                    Tags
+                    <input
+                      value={tags}
+                      onChange={(e) => setTags(e.target.value)}
+                      placeholder="python, weekend"
+                      maxLength={480}
+                    />
+                  </label>
+                </div>
+                <label>
+                  My notes
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    maxLength={8000}
+                    rows={2}
+                  />
+                </label>
+              </details>
             </>
           )}
           <Alert text={error} />
@@ -2520,7 +2627,10 @@ function Capture({
               Cancel
             </button>
             {(manual || drafted) && (
-              <button className="primary" disabled={busy}>
+              <button
+                className="primary"
+                disabled={busy || !hasSource || !captureTitle.trim()}
+              >
                 {busy ? <Busy /> : <Plus size={16} />}Create drop
               </button>
             )}

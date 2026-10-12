@@ -281,3 +281,30 @@ test("export includes original image bytes and survives database reopening", asy
   assert.deepEqual(actual.items, expected.items);
   assert.deepEqual(actual.sources, expected.sources);
 });
+
+test("keyword relevance ranks before pagination and preserves owner and pool filters", async () => {
+  const rankingOwner = randomUUID();
+  await db.query("INSERT INTO users(id,singleton,password_hash) VALUES($1,NULL,$2)", [rankingOwner, randomBytes(32).toString("hex")]);
+  const examples = [
+    save("Invoice template", {category: "Relevance"}),
+    save("Freelance invoice template", {category: "Relevance"}),
+    save("Template for an invoice", {category: "Relevance"}),
+    save("Billing reference", {category: "Relevance", tags: ["invoice", "template"]}),
+    save("Business resources", {category: "Relevance", summary: "Invoice template"}),
+    save("Recent screenshot", {category: "Relevance", source: {originalText: "An incidental invoice template mention"}}),
+  ];
+  const ids: string[] = [];
+  for (const [index, example] of examples.entries()) {
+    const item = (await library.save(rankingOwner, example)).item;
+    ids.push(item.id);
+    await db.query("UPDATE items SET created_at=$2 WHERE id=$1", [item.id, new Date(Date.UTC(2026, 0, index+1)).toISOString()]);
+  }
+  await library.save(other, save("Invoice template", {category: "Relevance"}));
+  await library.save(rankingOwner, save("Invoice template", {category: "Other", source: {originalText: "A distinct invoice template"}}));
+  const input = {query: "invoice template", mode: "keyword", category: "Relevance"};
+  const found = await library.search(rankingOwner, input);
+  assert.equal(found.total, 6);
+  assert.deepEqual(found.items.map(item => item.id), ids);
+  assert.deepEqual((await library.search(rankingOwner, {...input, limit: 2, offset: 4})).items.map(item => item.id), ids.slice(4));
+  assert.deepEqual((await library.search(rankingOwner, {category: "Relevance", mode: "keyword"})).items.map(item => item.id), [...ids].reverse());
+});
