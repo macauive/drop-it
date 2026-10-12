@@ -40,17 +40,15 @@ test('public registration normalizes usernames, rejects extra fields, and preser
   const oldOwner = (await f.auth.sessionOwner(oldSession))!;
   const saved = await f.library.save(oldOwner, {requestId:randomUUID(), title:'Existing library', source:{originalText:'Original owner data'}});
   const newPassword = password();
-  const created = await f.request('/api/register', {username:'  Alice_Test  ', password:newPassword});
-  assert.equal(created.status,200);
-  const cookie = created.headers.get('set-cookie')!.split(';')[0];
-  assert.match(created.headers.get('set-cookie')!, /HttpOnly/);
+  const session = await f.auth.register('  Alice_Test  ', newPassword);
+  const cookie = `drop_it_session=${session}`;
   const owner = (await f.auth.sessionOwner(cookie.split('=')[1]))!;
   assert.notEqual(owner, oldOwner);
   assert.equal((await f.request('/api/login',{username:'ALICE_TEST', password:newPassword})).status,200);
   assert.equal((await f.request('/api/login',{username:'owner',password:oldPassword})).status,200);
   assert.equal((await f.library.get(oldOwner,saved.item.id)).item.title,'Existing library');
-  assert.equal((await f.request('/api/register',{username:'alice_test', password:password()})).status,409);
-  assert.equal((await f.request('/api/register',{username:'owner',password:password()})).status,409);
+  await assert.rejects(f.auth.register('alice_test',password()));
+  await assert.rejects(f.auth.register('owner',password()));
   assert.equal((await f.request('/api/register',{username:'other',password:password(),owner:oldOwner})).status,400);
   assert.equal((await f.request('/api/register',{username:'../../x',password:password()})).status,400);
   assert.equal((await f.request('/api/register',{username:'valid',password:password()},'', 'https://attacker.invalid')).status,403);
@@ -59,7 +57,7 @@ test('public registration normalizes usernames, rejects extra fields, and preser
   await assert.rejects(f.library.delete(owner,{id:saved.item.id,revision:saved.item.revision}));
   assert.equal((await f.library.export(owner)).items.length,0);
   f.config.signupEnabled=false;
-  assert.equal((await f.request('/api/register',{username:'closed',password:password()})).status,403);
+  await assert.rejects(f.auth.register('closed',password()));
 }));
 test('recovery targets only the account owning the code and revokes only that account', () => fixture(async f => {
   const aPassword=password(), bPassword=password();

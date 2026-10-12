@@ -30,6 +30,9 @@ const publicAuthPaths = new Set([
   "/api/login",
   "/api/setup",
   "/api/register",
+  "/api/email/verify-signup",
+  "/api/email/request-reset",
+  "/api/email/reset-password",
   "/api/recover",
   "/api/chatgpt/start",
 ]);
@@ -56,7 +59,8 @@ export async function browserRequest(path: string, options: RequestInit = {}) {
     if (
       version === browserAuthVersion &&
       result?.code !== "LOGIN_FAILED" &&
-      result?.code !== "RECOVERY_FAILED"
+      result?.code !== "RECOVERY_FAILED" &&
+      result?.code !== "EMAIL_CODE_INVALID"
     ) {
       browserAuthVersion++;
       window.dispatchEvent(new Event("dropit:unauthenticated"));

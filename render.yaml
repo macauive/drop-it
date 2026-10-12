@@ -34,6 +34,16 @@ services:
         value: public
       - key: ALLOW_SIGNUP
         value: "false"
+      - key: EMAIL_AUTH_ENABLED
+        value: "true"
+      - key: EMAIL_AUTH_SECRET
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
       - key: TRUST_PROXY_HOPS
         value: "1"
       - key: OPENAI_API_KEY

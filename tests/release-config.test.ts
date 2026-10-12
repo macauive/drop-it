@@ -1,7 +1,8 @@
 import { test } from 'node:test';
+import {randomBytes} from 'node:crypto';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../server/config.js';
-const keys=['PUBLIC_URL','RENDER_EXTERNAL_URL','DATABASE_URL','NODE_ENV','ACCOUNT_MODE','ALLOW_SIGNUP','PUBLIC_PUBLISHER_NAME','PUBLIC_SUPPORT_EMAIL','BACKUP_RETENTION_DAYS','TRUST_PROXY_HOPS','OPENAI_APPS_CHALLENGE','OAUTH_REDIRECT_URIS'];
+const keys=['PUBLIC_URL','RENDER_EXTERNAL_URL','DATABASE_URL','NODE_ENV','ACCOUNT_MODE','ALLOW_SIGNUP','PUBLIC_PUBLISHER_NAME','PUBLIC_SUPPORT_EMAIL','BACKUP_RETENTION_DAYS','TRUST_PROXY_HOPS','OPENAI_APPS_CHALLENGE','OAUTH_REDIRECT_URIS','EMAIL_AUTH_ENABLED','EMAIL_AUTH_SECRET','SMTP_FROM','SMTP_USERNAME','SMTP_PASSWORD'];
 function isolated(run:()=>void) {
   const previous=keys.map(key=>[key,process.env[key]] as const);
   for(const key of keys) delete process.env[key];
@@ -14,7 +15,9 @@ test('release configuration fails closed without durable storage or publisher fa
   process.env.DATABASE_URL='postgresql://localhost/synthetic';
   assert.equal(loadConfig().origin,'https://synthetic.example.test');
   process.env.ALLOW_SIGNUP='true'; assert.throws(()=>loadConfig(),/ACCOUNT_MODE/);
-  process.env.ACCOUNT_MODE='public'; assert.throws(()=>loadConfig(),/publisher/);
+  process.env.ACCOUNT_MODE='public'; assert.throws(()=>loadConfig(),/EMAIL_AUTH/);
+  process.env.EMAIL_AUTH_ENABLED='true';process.env.EMAIL_AUTH_SECRET=randomBytes(32).toString('base64url');process.env.SMTP_FROM='sender@example.test';process.env.SMTP_USERNAME=randomBytes(16).toString('hex');process.env.SMTP_PASSWORD=randomBytes(24).toString('hex');
+  assert.throws(()=>loadConfig(),/publisher/);
   process.env.PUBLIC_PUBLISHER_NAME='Synthetic publisher'; process.env.PUBLIC_SUPPORT_EMAIL='support@example.test'; process.env.BACKUP_RETENTION_DAYS='3';
   assert.equal(loadConfig().signupEnabled,true);
   process.env.PUBLIC_URL='https://canonical.example.test'; assert.equal(loadConfig().origin,'https://canonical.example.test');

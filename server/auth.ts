@@ -31,6 +31,7 @@ import {
   recoveryCodeSchema,
   idSchema,
   usernameSchema,
+  loginIdentifierSchema,
 } from "../shared/schema.js";
 
 // OWASP's 32 MiB scrypt profile; only these explicit profiles are accepted.
@@ -137,7 +138,7 @@ export async function hashPassword(password: string) {
   const hash = await derivePassword(password, salt);
   return `${passwordHashPrefix}$${salt}$${hash.toString("hex")}`;
 }
-async function verifyPassword(password: string, encoded: string) {
+export async function verifyPassword(password: string, encoded: string) {
   const current = currentPasswordHash.exec(encoded);
   const parsed = current ?? legacyPasswordHash.exec(encoded);
   if (!parsed) return { valid: false, needsUpgrade: false };
@@ -150,6 +151,20 @@ async function verifyPassword(password: string, encoded: string) {
 }
 
 export class Auth implements OAuthServerProvider {
+  private passwordChangedNotifier?: (email: string) => void;
+  setPasswordChangedNotifier(notify: (email: string) => void) {
+    this.passwordChangedNotifier = notify;
+  }
+  private passwordChanged(email: string | null) {
+    if (!email) return;
+    try {
+      this.passwordChangedNotifier?.(email);
+    } catch {
+      console.error("Password-change notification failed", {
+        code: "EMAIL_NOTIFICATION_FAILED",
+      });
+    }
+  }
   constructor(
     readonly db: Database,
     readonly config: Config,
@@ -257,9 +272,9 @@ export class Auth implements OAuthServerProvider {
   async login(password: string, userAgent?: string, username?: string) {
     currentPasswordSchema.parse(password);
     const name =
-      username === undefined ? "owner" : usernameSchema.parse(username);
+      username === undefined ? "owner" : loginIdentifierSchema.parse(username);
     const { rows } = await this.db.query<UserRow>(
-      "SELECT id,password_hash,auth_version FROM users WHERE username=$1 OR ($1='owner' AND singleton=true) LIMIT 1",
+      "SELECT id,password_hash,auth_version FROM users WHERE username=$1 OR ($1='owner' AND singleton=true) OR (email=$1 AND email_verified_at IS NOT NULL) LIMIT 1",
       [name],
     );
     const user = rows[0];
@@ -390,6 +405,7 @@ export class Auth implements OAuthServerProvider {
     owner: string,
     clearRecovery: boolean,
   ) {
+    await tx.query("DELETE FROM email_challenges WHERE owner=$1", [owner]);
     await tx.query("DELETE FROM chatgpt_connections WHERE owner=$1", [owner]);
     await tx.query("DELETE FROM chatgpt_pending WHERE owner=$1", [owner]);
     await tx.query("DELETE FROM sessions WHERE owner=$1", [owner]);
@@ -401,6 +417,34 @@ export class Auth implements OAuthServerProvider {
         : "UPDATE users SET auth_version=auth_version+1 WHERE id=$1",
       [owner],
     );
+  }
+  // Called only after a single-use email challenge has been checked in the
+  // same transaction. Password recovery intentionally revokes compromised
+  // credentials; adding an email never calls this method.
+  async completeEmailRecovery(
+    tx: Queryable,
+    owner: string,
+    version: number,
+    email: string,
+    hash: string,
+  ) {
+    const current = await this.lockOwner(tx, owner);
+    const identity = await tx.query<{ email: string | null }>(
+      "SELECT email FROM users WHERE id=$1",
+      [owner],
+    );
+    if (
+      !current ||
+      current.auth_version !== version ||
+      identity.rows[0]?.email !== email
+    )
+      return false;
+    await tx.query("UPDATE users SET password_hash=$1 WHERE id=$2", [
+      hash,
+      owner,
+    ]);
+    await this.invalidateCredentials(tx, owner, true);
+    return true;
   }
   async security(owner: string, token: string) {
     idSchema.parse(owner);
@@ -419,6 +463,13 @@ export class Auth implements OAuthServerProvider {
         [owner, current.id],
       );
       return {
+        email: (
+          await tx.query<{ email: string | null }>(
+            "SELECT email FROM users WHERE id=$1",
+            [owner],
+          )
+        ).rows[0].email,
+        emailAuthEnabled: Boolean(this.config.emailAuth),
         recoveryEnabled: Boolean(user.recovery_hash),
         recoveryCreatedAt: user.recovery_created_at
           ? new Date(user.recovery_created_at).toISOString()
@@ -443,14 +494,21 @@ export class Auth implements OAuthServerProvider {
     newPasswordSchema.parse(newPassword);
     const snapshot = await this.reauthenticate(owner, token, currentPassword);
     const hash = await hashPassword(newPassword);
-    await this.db.transaction(async (tx) => {
+    const email = await this.db.transaction(async (tx) => {
       await this.recheck(tx, snapshot, token);
       await tx.query("UPDATE users SET password_hash=$1 WHERE id=$2", [
         hash,
         owner,
       ]);
       await this.invalidateCredentials(tx, owner, true);
+      return (
+        await tx.query<{ email: string | null }>(
+          "SELECT email FROM users WHERE id=$1",
+          [owner],
+        )
+      ).rows[0].email;
     });
+    this.passwordChanged(email);
   }
   async createRecoveryCode(
     owner: string,
@@ -485,7 +543,7 @@ export class Auth implements OAuthServerProvider {
       );
     if (!snapshot) throw rejected();
     const hash = await hashPassword(newPassword);
-    await this.db.transaction(async (tx) => {
+    const email = await this.db.transaction(async (tx) => {
       const current = await this.lockOwner(tx, snapshot.id);
       if (
         !current ||
@@ -498,7 +556,14 @@ export class Auth implements OAuthServerProvider {
         snapshot.id,
       ]);
       await this.invalidateCredentials(tx, snapshot.id, true);
+      return (
+        await tx.query<{ email: string | null }>(
+          "SELECT email FROM users WHERE id=$1",
+          [snapshot.id],
+        )
+      ).rows[0].email;
     });
+    this.passwordChanged(email);
   }
   async deleteAccount(owner: string, token: string, password: string) {
     const snapshot = await this.reauthenticate(owner, token, password);

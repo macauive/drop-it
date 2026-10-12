@@ -8,6 +8,10 @@ try {
     ["Public HTTPS origin", !c.local],
     ["Hosted PostgreSQL configured", Boolean(c.databaseUrl)],
     ["Public accounts configured", Boolean(c.publicAccounts)],
+    [
+      "Email authentication configured (delivery not verified)",
+      Boolean(c.emailAuth),
+    ],
     ["OAuth callback allowlist configured", c.redirectUris.length > 0],
     ["AI key configured (not verified)", Boolean(c.ai)],
     [

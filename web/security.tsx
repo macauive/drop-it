@@ -12,6 +12,9 @@ import {
   type SecurityInfo,
 } from "../shared/schema.js";
 import { api } from "./client.js";
+import { NewPasswordFields } from "./new-password.js";
+export { NewPasswordFields } from "./new-password.js";
+import { EmailAuthForm } from "./email-auth.js";
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : "The action could not be completed.";
@@ -30,52 +33,6 @@ function ErrorMessage({ text }: { text: string }) {
       {text}
     </div>
   ) : null;
-}
-
-export function NewPasswordFields({
-  password,
-  confirmation,
-  onPassword,
-  onConfirmation,
-}: {
-  password: string;
-  confirmation: string;
-  onPassword: (value: string) => void;
-  onConfirmation: (value: string) => void;
-}) {
-  return (
-    <>
-      <label>
-        New password
-        <input
-          type="password"
-          name="newPassword"
-          autoComplete="new-password"
-          minLength={15}
-          maxLength={128}
-          required
-          value={password}
-          onChange={(event) => onPassword(event.target.value)}
-        />
-        <span className="field-note">
-          Use at least 15 characters. A unique passphrase works well.
-        </span>
-      </label>
-      <label>
-        Confirm new password
-        <input
-          type="password"
-          name="confirmPassword"
-          autoComplete="new-password"
-          minLength={15}
-          maxLength={128}
-          required
-          value={confirmation}
-          onChange={(event) => onConfirmation(event.target.value)}
-        />
-      </label>
-    </>
-  );
 }
 
 export function RecoveryForm({
@@ -100,7 +57,7 @@ export function RecoveryForm({
         your password signs out every browser and disconnects all apps.
       </p>
       <p className="field-note">
-        There is no email reset. You need a previously saved recovery code.
+        This method needs a previously saved recovery code.
       </p>
       <form
         onSubmit={async (event) => {
@@ -477,6 +434,28 @@ export function SecuritySettings({
       {info && (
         <>
           <div className="security-group">
+            <h4>Verified email</h4>
+            {info.email ? (
+              <p>{info.email} · Verified for sign-in and password recovery.</p>
+            ) : info.emailAuthEnabled ? (
+              <EmailAuthForm
+                mode="link"
+                disabled={disabled || Boolean(action) || Boolean(recoveryCode)}
+                onComplete={() => {
+                  setNotice(
+                    "Email verified. Your library and connected apps are unchanged.",
+                  );
+                  setAttempt((value) => value + 1);
+                }}
+              />
+            ) : (
+              <p>
+                Email verification is not available yet. Your existing sign-in
+                and recovery code still work.
+              </p>
+            )}
+          </div>
+          <div className="security-group">
             <h4>
               <KeyRound size={15} />
               Password
@@ -503,7 +482,8 @@ export function SecuritySettings({
             </p>
             <p>
               Keep it outside Drop It, such as in a password manager or a safe
-              offline copy. There is no email recovery.
+              offline copy. It works as a backup if you cannot access your
+              email.
             </p>
             {recoveryCode ? (
               <div

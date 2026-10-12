@@ -11,6 +11,7 @@ export type Config = Omit<
   | "publicSite"
   | "domainChallenge"
   | "libraryLimits"
+  | "emailAuth"
 > &
   Partial<
     Pick<
@@ -22,6 +23,7 @@ export type Config = Omit<
       | "publicSite"
       | "domainChallenge"
       | "libraryLimits"
+      | "emailAuth"
     >
   >;
 export function loadConfig() {
@@ -75,6 +77,11 @@ export function loadConfig() {
     "true";
   if (signupEnabled && !publicAccounts)
     throw new Error("ALLOW_SIGNUP requires ACCOUNT_MODE=public.");
+  const emailAuth = loadEmailAuthConfig();
+  if (signupEnabled && !emailAuth)
+    throw new Error(
+      "ALLOW_SIGNUP requires EMAIL_AUTH_ENABLED and email settings.",
+    );
   if (
     process.env.NODE_ENV === "production" &&
     !local &&
@@ -98,6 +105,7 @@ export function loadConfig() {
       "Public signup requires publisher, support and backup retention settings.",
     );
   return {
+    emailAuth,
     chatgpt: loadChatGPTConfig(),
     port,
     origin: publicUrl.origin,
@@ -171,6 +179,32 @@ export function loadConfig() {
         .max(10000)
         .parse(process.env.MAX_AI_STARTS_PER_MINUTE ?? 120),
     },
+  };
+}
+
+export type EmailAuthConfig = {
+  secret: string;
+  from: string;
+  username: string;
+  password: string;
+};
+function loadEmailAuthConfig(): EmailAuthConfig | undefined {
+  if (
+    z
+      .enum(["true", "false"])
+      .parse(process.env.EMAIL_AUTH_ENABLED ?? "false") === "false"
+  )
+    return undefined;
+  return {
+    secret: z.string().min(32).max(256).parse(process.env.EMAIL_AUTH_SECRET),
+    from: z
+      .string()
+      .max(254)
+      .email()
+      .regex(/^[^\s<>\r\n,;]+@[^\s<>\r\n,;]+$/)
+      .parse(process.env.SMTP_FROM),
+    username: z.string().min(1).max(254).parse(process.env.SMTP_USERNAME),
+    password: z.string().min(1).max(4096).parse(process.env.SMTP_PASSWORD),
   };
 }
 

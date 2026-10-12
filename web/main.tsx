@@ -74,6 +74,7 @@ import { useUnsavedChanges } from "./unsaved.js";
 import { PortabilitySettings } from "./portability.js";
 import { sharedCaptureSchema, type SharedCapture } from "../shared/capture.js";
 import { RecoveryForm, SecuritySettings } from "./security.js";
+import { EmailAuthForm } from "./email-auth.js";
 import {
   fileAccept,
   fileMime,
@@ -196,6 +197,7 @@ function App() {
     publicAccounts?: boolean;
     signupEnabled?: boolean;
     chatgptEnabled?: boolean;
+    emailAuthEnabled?: boolean;
   } | null>(
     embedded
       ? { authenticated: true, needsSetup: false, localSetup: false }
@@ -229,6 +231,8 @@ function App() {
         localSetup: value?.localSetup ?? false,
         publicAccounts: value?.publicAccounts,
         signupEnabled: value?.signupEnabled,
+        emailAuthEnabled: value?.emailAuthEnabled,
+        chatgptEnabled: value?.chatgptEnabled,
       }));
     };
     window.addEventListener("dropit:unauthenticated", sessionEnded);
@@ -266,6 +270,7 @@ function App() {
         publicAccounts={session.publicAccounts ?? false}
         signupEnabled={session.signupEnabled ?? false}
         chatgptEnabled={session.chatgptEnabled ?? false}
+        emailAuthEnabled={session.emailAuthEnabled ?? false}
         notice={authNotice}
         onSuccess={() => {
           setAuthNotice("");
@@ -293,6 +298,7 @@ function Login({
   publicAccounts,
   signupEnabled,
   chatgptEnabled,
+  emailAuthEnabled,
   notice,
   onSuccess,
 }: {
@@ -301,6 +307,7 @@ function Login({
   publicAccounts: boolean;
   signupEnabled: boolean;
   chatgptEnabled: boolean;
+  emailAuthEnabled: boolean;
   notice: string;
   onSuccess: () => void;
 }) {
@@ -313,22 +320,64 @@ function Login({
   const loginLock = useRef(false);
   const [registering, setRegistering] = useState(false);
   const [username, setUsername] = useState("");
+  const [emailRecovery, setEmailRecovery] = useState(true);
   const creating = setup || registering;
   return (
     <main className="auth-shell">
       <Brand />
       <div className="auth-form">
-        {recovering && !setup ? (
-          <RecoveryForm
-            onCancel={() => setRecovering(false)}
-            onRecovered={() => {
-              setRecovering(false);
+        {registering ? (
+          <EmailAuthForm
+            mode="signup"
+            onCancel={() => setRegistering(false)}
+            onComplete={(email) => {
+              setRegistering(false);
+              setUsername(email);
               setPassword("");
+              setConfirmation("");
+              setError("");
               setRecoveryNotice(
-                "Password reset. Sign in with your new password, then generate a new recovery code in Settings.",
+                "Email verified. Sign in to open your new library.",
               );
             }}
           />
+        ) : recovering && !setup && emailRecovery && emailAuthEnabled ? (
+          <>
+            <EmailAuthForm
+              mode="reset"
+              onCancel={() => setRecovering(false)}
+              onComplete={(email) => {
+                setRecovering(false);
+                setUsername(email);
+                setPassword("");
+                setError("");
+                setRecoveryNotice(
+                  "Password reset. Sign in with your new password.",
+                );
+              }}
+            />
+            <button type="button" onClick={() => setEmailRecovery(false)}>
+              Use an offline recovery code instead
+            </button>
+          </>
+        ) : recovering && !setup ? (
+          <>
+            <RecoveryForm
+              onCancel={() => setRecovering(false)}
+              onRecovered={() => {
+                setRecovering(false);
+                setPassword("");
+                setRecoveryNotice(
+                  "Password reset. Sign in with your new password, then generate a new recovery code in Settings.",
+                );
+              }}
+            />
+            {emailAuthEnabled && (
+              <button type="button" onClick={() => setEmailRecovery(true)}>
+                Use email recovery instead
+              </button>
+            )}
+          </>
         ) : (
           <>
             <span className="eyebrow">YOUR PRIVATE LIBRARY</span>
@@ -397,18 +446,10 @@ function Login({
                   setBusy(true);
                   setError("");
                   try {
-                    await api(
-                      registering
-                        ? "/api/register"
-                        : setup
-                          ? "/api/setup"
-                          : "/api/login",
-                      "POST",
-                      {
-                        password,
-                        ...(publicAccounts ? { username } : {}),
-                      },
-                    );
+                    await api(setup ? "/api/setup" : "/api/login", "POST", {
+                      password,
+                      ...(publicAccounts ? { username } : {}),
+                    });
                     onSuccess();
                   } catch (e) {
                     setError(message(e));
@@ -422,31 +463,23 @@ function Login({
               >
                 {publicAccounts && (
                   <label>
-                    Username
+                    Email or existing username
                     <input
                       name="username"
                       autoComplete="username"
                       autoCapitalize="none"
                       spellCheck={false}
                       minLength={3}
-                      maxLength={40}
-                      pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*"
+                      maxLength={254}
                       required
                       value={username}
                       onChange={(event) => setUsername(event.target.value)}
                       disabled={busy}
                     />
                     <span className="field-note">
-                      Use 3–40 letters, numbers, underscores or hyphens. Your
-                      username is private.
+                      Existing accounts can still sign in with their username.
                     </span>
                   </label>
-                )}
-                {registering && (
-                  <p className="field-note">
-                    No email is collected. After signing up, save a recovery
-                    code from Settings so you can recover a forgotten password.
-                  </p>
                 )}
                 <label>
                   Password
@@ -506,6 +539,7 @@ function Login({
                       setConfirmation("");
                       setError("");
                       setRecovering(true);
+                      setEmailRecovery(true);
                     }}
                   >
                     Forgot password?
@@ -1010,15 +1044,16 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
           {!embedded &&
             !recoveryDeferred &&
             security &&
-            !security.recoveryEnabled && (
+            !security.recoveryEnabled &&
+            !security.email && (
               <section
                 className="onboarding-notice"
                 aria-label="Protect your library"
               >
                 <strong>Keep a way back into your library.</strong>
                 <p>
-                  You have no recovery code. There is no email reset; losing
-                  your password could mean losing access to your drops.
+                  Add a verified email or save an offline recovery code in
+                  Settings so you can recover a forgotten password.
                 </p>
                 <div className="actions">
                   <button onClick={() => setSettingsOpen(true)}>

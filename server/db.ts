@@ -325,4 +325,34 @@ export async function migrate(db: Database) {
     )`);
     await tx.query("INSERT INTO schema_migrations(version) VALUES(10)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=11"))
+        .rows.length
+    )
+      return;
+    // Additive migration: legacy IDs, password hashes, sessions, libraries and
+    // OAuth/ChatGPT credentials are deliberately untouched.
+    await tx.query(`ALTER TABLE users ADD COLUMN email text UNIQUE,
+      ADD COLUMN email_verified_at timestamptz,
+      ADD CONSTRAINT users_email_state CHECK((email IS NULL) = (email_verified_at IS NULL)),
+      ADD CONSTRAINT users_email_normalized CHECK(email IS NULL OR
+        (email=lower(email) AND email=btrim(email) AND char_length(email) BETWEEN 3 AND 254))`);
+    await tx.query(`CREATE TABLE email_challenges (
+      hash text PRIMARY KEY, email text NOT NULL,
+      purpose text NOT NULL CHECK(purpose IN ('signup','link','reset')),
+      owner uuid REFERENCES users(id) ON DELETE CASCADE,
+      auth_version integer, password_hash text, code_hash text NOT NULL,
+      attempts integer NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 3),
+      expires_at timestamptz NOT NULL DEFAULT now()+interval '10 minutes',
+      UNIQUE(email,purpose),
+      CHECK((purpose='signup' AND owner IS NULL AND auth_version IS NULL AND password_hash IS NOT NULL)
+        OR (purpose IN ('link','reset') AND owner IS NOT NULL AND auth_version IS NOT NULL AND password_hash IS NULL))
+    )`);
+    await tx.query(`CREATE TABLE email_request_limits (
+      key text PRIMARY KEY, starts_at timestamptz NOT NULL DEFAULT now(),
+      last_at timestamptz NOT NULL DEFAULT now(), count integer NOT NULL DEFAULT 1
+    )`);
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(11)");
+  });
 }

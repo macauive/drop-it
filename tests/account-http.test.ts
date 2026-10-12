@@ -297,6 +297,8 @@ test("session metadata uses public IDs and coarse labels without raw agents, IPs
     );
     const metadata = await security(f, secondCookie);
     assert.deepEqual(Object.keys(metadata).sort(), [
+      "email",
+      "emailAuthEnabled",
       "recoveryCreatedAt",
       "recoveryEnabled",
       "sessions",

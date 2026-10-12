@@ -14,6 +14,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Database } from "./db.js";
 import type { Config } from "./config.js";
 import { Auth } from "./auth.js";
+import { EmailAuth, smtpEmailSender, type EmailSender } from "./email-auth.js";
 import { Library } from "./library.js";
 import { createMcpServer } from "./mcp.js";
 import { AppError } from "./errors.js";
@@ -25,7 +26,9 @@ import {
   newPasswordSchema,
   recoveryCodeSchema,
   securityInfoSchema,
-  usernameSchema,
+  loginIdentifierSchema,
+  emailSchema,
+  emailChallengeSchema,
 } from "../shared/schema.js";
 import { OpenAIProvider, type AIProvider } from "./ai.js";
 import { addPublicPages } from "./public-pages.js";
@@ -56,9 +59,20 @@ export function createApp(
   html: string,
   ai?: AIProvider,
   chatgptTransport: typeof fetch = fetch,
+  emailSender?: EmailSender,
 ) {
   const app = express();
   const auth = new Auth(db, config);
+  const emailAuth = new EmailAuth(
+    db,
+    auth,
+    config,
+    emailSender ??
+      (config.emailAuth ? smtpEmailSender(config.emailAuth) : undefined),
+  );
+  auth.setPasswordChangedNotifier((email) =>
+    emailAuth.notifyPasswordChanged(email),
+  );
   const chatgpt = new ChatGPT(db, auth, config, chatgptTransport);
   const siteAI = ai ?? (config.ai ? new OpenAIProvider(config.ai) : undefined);
   const library = new Library(db, siteAI, config.libraryLimits, (owner) =>
@@ -177,9 +191,11 @@ export function createApp(
   const passwordSchema = z
     .object({
       password: currentPasswordSchema,
-      username: usernameSchema.optional(),
+      username: loginIdentifierSchema.optional(),
+      email: emailSchema.optional(),
     })
-    .strict();
+    .strict()
+    .refine((value) => !(value.username && value.email));
   const setupSchema = z.object({ password: newPasswordSchema }).strict();
   const reauthSchema = z
     .object({ currentPassword: currentPasswordSchema })
@@ -199,7 +215,8 @@ export function createApp(
       needsSetup: !config.publicAccounts && !(await auth.hasOwner()),
       localSetup: config.local,
       publicAccounts: config.publicAccounts ?? false,
-      signupEnabled: config.signupEnabled ?? false,
+      signupEnabled: Boolean(config.signupEnabled && emailAuth.enabled),
+      emailAuthEnabled: emailAuth.enabled,
       ...(config.chatgpt ? { chatgptEnabled: true } : {}),
     });
   });
@@ -286,26 +303,43 @@ export function createApp(
       .json({ ok: true });
   });
   app.post("/api/register", loginLimiter, async (req, res) => {
-    const { username, password } = z
-      .object({ username: usernameSchema, password: newPasswordSchema })
+    const { email, password } = z
+      .object({ email: emailSchema, password: newPasswordSchema })
       .strict()
       .parse(req.body);
+    res.json(await emailAuth.request("signup", email, password));
+  });
+  app.post("/api/email/verify-signup", loginLimiter, async (req, res) => {
+    const { requestId, code, password } = emailChallengeSchema
+      .extend({ password: newPasswordSchema })
+      .parse(req.body);
+    res.json(await emailAuth.verify("signup", { requestId, code }, password));
+  });
+  app.post("/api/email/request-reset", loginLimiter, async (req, res) => {
+    const { email } = z.object({ email: emailSchema }).strict().parse(req.body);
+    res.json(await emailAuth.request("reset", email));
+  });
+  app.post("/api/email/reset-password", loginLimiter, async (req, res) => {
+    const { requestId, code, newPassword } = emailChallengeSchema
+      .extend({ newPassword: newPasswordSchema })
+      .parse(req.body);
+    await emailAuth.verify("reset", { requestId, code }, newPassword);
     res
-      .cookie(
-        cookie,
-        await auth.register(username, password, req.get("User-Agent")),
-        cookieOptions,
-      )
+      .clearCookie(cookie, { ...cookieOptions, maxAge: undefined })
       .json({ ok: true });
   });
   app.post("/api/login", loginLimiter, async (req, res) => {
-    const { password, username } = passwordSchema.parse(req.body);
-    if (config.publicAccounts && !username)
-      throw new AppError(400, "USERNAME_REQUIRED", "Enter your username.");
+    const { password, username, email } = passwordSchema.parse(req.body);
+    if (config.publicAccounts && !username && !email)
+      throw new AppError(
+        400,
+        "USERNAME_REQUIRED",
+        "Enter your email or existing username.",
+      );
     res
       .cookie(
         cookie,
-        await auth.login(password, req.get("User-Agent"), username),
+        await auth.login(password, req.get("User-Agent"), email ?? username),
         cookieOptions,
       )
       .json({ ok: true });
@@ -341,6 +375,35 @@ export function createApp(
         res.locals.owner,
         req.cookies[cookie],
         currentPassword,
+      ),
+    );
+  });
+  app.post("/api/email/link", reauthLimiter, async (req, res) => {
+    const { email, currentPassword } = z
+      .object({ email: emailSchema, currentPassword: currentPasswordSchema })
+      .strict()
+      .parse(req.body);
+    res.json(
+      await emailAuth.request(
+        "link",
+        email,
+        currentPassword,
+        res.locals.owner,
+        req.cookies[cookie],
+      ),
+    );
+  });
+  app.post("/api/email/verify-link", reauthLimiter, async (req, res) => {
+    const { requestId, code, currentPassword } = emailChallengeSchema
+      .extend({ currentPassword: currentPasswordSchema })
+      .parse(req.body);
+    res.json(
+      await emailAuth.verify(
+        "link",
+        { requestId, code },
+        currentPassword,
+        res.locals.owner,
+        req.cookies[cookie],
       ),
     );
   });
@@ -804,5 +867,14 @@ export function createApp(
       res.status(500).json({ error: "Something went wrong. Please retry." });
     },
   );
-  return { app, auth, library, close: () => portability.close() };
+  return {
+    app,
+    auth,
+    emailAuth,
+    library,
+    close: async () => {
+      await emailAuth.close();
+      await portability.close();
+    },
+  };
 }

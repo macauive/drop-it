@@ -58,6 +58,30 @@ export type LibrarySettings = z.infer<typeof settingsSchema>;
 export const idSchema = z.string().uuid();
 export const currentPasswordSchema = z.string().min(1).max(128);
 export const newPasswordSchema = z.string().min(15).max(128);
+// A single ASCII mailbox, never a display name, recipient list or header.
+export const emailSchema = z
+  .string()
+  .max(254)
+  .trim()
+  .toLowerCase()
+  .email()
+  .regex(/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+$/);
+export const loginIdentifierSchema = z.union([
+  emailSchema,
+  z
+    .string()
+    .trim()
+    .toLowerCase()
+    .min(3)
+    .max(40)
+    .regex(/^[a-z0-9][a-z0-9_-]*$/),
+]);
+export const emailChallengeSchema = z
+  .object({
+    requestId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    code: z.string().regex(/^[0-9]{6}$/),
+  })
+  .strict();
 export const usernameSchema = z
   .string()
   .trim()
@@ -75,6 +99,8 @@ export const recoveryCodeSchema = z
   .regex(/^[A-Za-z0-9_-]{43}$/);
 export const securityInfoSchema = z
   .object({
+    email: emailSchema.nullable().optional(),
+    emailAuthEnabled: z.boolean().optional(),
     recoveryEnabled: z.boolean(),
     recoveryCreatedAt: z.string().datetime().nullable(),
     sessions: z
