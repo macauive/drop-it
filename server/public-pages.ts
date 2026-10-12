@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { renderAboutPage } from "./about-page.js";
+import { renderInformationPage } from "./public-brand.js";
 
 export const publicSiteSchema = z
   .object({
@@ -69,8 +70,6 @@ export function addPublicPages(app: Express, site?: PublicSite) {
     const page = pages[req.path];
     res
       .type("html")
-      .send(
-        `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${page.title} · Drop It</title><style>body{font:17px/1.65 system-ui,sans-serif;background:#faf9f6;color:#252525;margin:0}main{max-width:760px;margin:auto;padding:48px 24px}nav{display:flex;flex-wrap:wrap;gap:20px;margin-bottom:40px}a{color:inherit;text-underline-offset:4px}h1{font-size:40px;line-height:1.15}h2{font-size:22px;margin-top:36px}</style><main><nav aria-label="Main"><a href="/about">Drop It</a><a href="/">Library</a><a href="/support">Support</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav><h1>${page.title}</h1>${page.body}</main></html>`,
-      );
+      .send(renderInformationPage(page.title, page.body, publisher, req.path));
   });
 }

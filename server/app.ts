@@ -35,10 +35,9 @@ import { addPublicPages } from "./public-pages.js";
 import { addPortabilityRoutes } from "./portability.js";
 import { sharedCaptureSchema } from "../shared/capture.js";
 import sharp from "sharp";
+import { appIconSvg } from "./public-brand.js";
 import { thumbnail } from "./thumbnails.js";
 
-const appIconSvg =
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect width="192" height="192" rx="40" fill="#1764c0"/><path d="M96 34c-18 26-42 50-42 75a42 42 0 0 0 84 0c0-25-24-49-42-75Z" fill="none" stroke="white" stroke-width="10"/><path d="M48 145v15h96v-15" fill="none" stroke="white" stroke-width="8"/></svg>';
 const appIconPng: Partial<Record<192 | 512, Promise<Buffer>>> = {};
 function pngAppIcon(size: 192 | 512) {
   // Only two constant routes can request these sizes. Share in-flight work and

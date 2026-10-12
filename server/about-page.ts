@@ -1,3 +1,10 @@
+import {
+  publicBrandHead,
+  publicBrandStyles,
+  publicHeader,
+  publicFooter,
+} from "./public-brand.js";
+
 // This page is deliberately static: no account data or client-side scripts.
 // The caller supplies an HTML-escaped publisher name.
 export function renderAboutPage(publisher: string) {
@@ -18,110 +25,9 @@ export function renderAboutPage(publisher: string) {
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="A private place for the ideas, links, screenshots and files you want to come back to. Meet Drop It.">
   <title>About · Drop It</title>
+  ${publicBrandHead}
   <style>
-    :root {
-      font-family:
-        Inter,
-        -apple-system,
-        BlinkMacSystemFont,
-        "Segoe UI",
-        sans-serif;
-      color: #242932;
-      background: #f8f9fb;
-      font-synthesis: none;
-      --blue: #1764c0;
-      --muted: #626c78;
-      --line: #e0e5ec;
-    }
-    * {
-      box-sizing: border-box;
-    }
-    body {
-      margin: 0;
-    }
-    a {
-      color: inherit;
-      text-decoration: none;
-      text-underline-offset: 4px;
-    }
-    a:focus-visible {
-      outline: 3px solid var(--blue);
-      outline-offset: 5px;
-    }
-    a:hover {
-      text-decoration: underline;
-    }
-    svg {
-      flex-shrink: 0;
-    }
-    h1,
-    h2,
-    h3,
-    p {
-      margin: 0;
-    }
-    p {
-      line-height: 1.7;
-    }
-    .container {
-      width: min(1120px, calc(100% - 80px));
-      margin-inline: auto;
-    }
-    .skip {
-      position: absolute;
-      top: 12px;
-      left: 12px;
-      transform: translateY(-200%);
-      padding: 12px;
-      background: white;
-      z-index: 5;
-    }
-    .skip:focus {
-      transform: none;
-    }
-    header {
-      border-bottom: 1px solid var(--line);
-    }
-    .navigation {
-      min-height: 88px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 24px;
-    }
-    .brand {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 21px;
-      font-weight: 700;
-      letter-spacing: -0.7px;
-    }
-    .brand-mark {
-      width: 36px;
-      height: 36px;
-      display: grid;
-      place-items: center;
-      color: white;
-      background: var(--blue);
-      border-radius: 10px;
-    }
-    nav {
-      display: flex;
-      align-items: center;
-      gap: 30px;
-      font-size: 14px;
-      font-weight: 500;
-    }
-    .nav-library {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-    }
-    .nav-library svg {
-      width: 17px;
-      height: 17px;
-    }
+    ${publicBrandStyles}
     .hero {
       display: grid;
       grid-template-columns: 1.08fr 1fr;
@@ -364,30 +270,6 @@ export function renderAboutPage(publisher: string) {
       color: var(--blue);
       font-weight: 600;
     }
-    footer {
-      border-top: 1px solid var(--line);
-    }
-    .footer-inner {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 24px;
-      padding-block: 27px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-    .footer-credit {
-      line-height: 1.7;
-      overflow-wrap: anywhere;
-    }
-    .footer-credit strong {
-      color: #242932;
-      font-weight: 600;
-    }
-    footer nav {
-      gap: 24px;
-      font-size: 12px;
-    }
     @media (min-width: 1400px) {
       .hero {
         padding-block: 104px 88px;
@@ -421,24 +303,6 @@ export function renderAboutPage(publisher: string) {
     @media (max-width: 640px) {
       .container {
         width: calc(100% - 40px);
-      }
-      .navigation {
-        min-height: 76px;
-        gap: 16px;
-      }
-      nav {
-        gap: 18px;
-        font-size: 12px;
-      }
-      .brand {
-        font-size: 19px;
-      }
-      .brand-mark {
-        width: 32px;
-        height: 32px;
-      }
-      .nav-library svg {
-        display: none;
       }
       .hero {
         grid-template-columns: 1fr;
@@ -490,25 +354,10 @@ export function renderAboutPage(publisher: string) {
         padding: 26px 22px;
         margin-bottom: 36px;
       }
-      .footer-inner {
-        align-items: flex-start;
-        flex-direction: column;
-        gap: 18px;
-        padding-block: 24px;
-      }
-      .footer-inner nav {
-        flex-wrap: wrap;
-      }
     }
     @media (max-width: 360px) {
-      nav {
-        gap: 12px;
-      }
       h1 {
         font-size: 46px;
-      }
-      .brand {
-        gap: 7px;
       }
       .container {
         width: calc(100% - 32px);
@@ -517,13 +366,7 @@ export function renderAboutPage(publisher: string) {
   </style>
 </head>
 <body>
-  <a class="skip" href="#main">Skip to content</a>
-  <header>
-    <div class="container navigation">
-      <a class="brand" href="/about" aria-label="Drop It — About"><span class="brand-mark">${drop}</span>Drop It</a>
-      <nav aria-label="Main"><a href="/support">Support</a><a class="nav-library" href="/">Open library ${arrow}</a></nav>
-    </div>
-  </header>
+  ${publicHeader("/about")}
   <main id="main" class="container">
     <section class="hero" aria-labelledby="about-title">
       <div>
@@ -567,7 +410,7 @@ export function renderAboutPage(publisher: string) {
       <ul><li>Save only what you choose to share. Saved links aren’t automatically fetched.</li><li>AI-generated details are suggestions to review. AI search is off by default.</li><li>Export your library, manage connected apps, or delete your account in Settings.</li></ul>
     </section>
   </main>
-  <footer><div class="container footer-inner"><p class="footer-credit"><strong>Drop It</strong><br>Published by ${publisher}.</p><nav aria-label="Product information"><a href="/support">Support</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav></div></footer>
+  ${publicFooter(publisher, "/about")}
 </body>
 </html>`;
 }
