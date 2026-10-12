@@ -2,10 +2,11 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { randomBytes, createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { once } from "node:events";
+import { inlineWidget } from "../scripts/inline-widget.js";
 import sharp from "sharp";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -677,4 +678,89 @@ test("session logout invalidates browser access and origin checks protect change
   assert.equal((await request("/api/export")).status, 401);
   const login = await request("/api/login", "POST", { password });
   assert.equal(login.status, 200);
+});
+
+test("single-file build embeds assets and prevents script/style breakout", async () => {
+  const buildDir = await mkdtemp(join(tmpdir(), "drop-it-widget-build-"));
+  try {
+    const dangerousText = '</ScRiPt><script>alert("fixture")</script><!--';
+    await writeFile(
+      join(buildDir, "index.html"),
+      '<!doctype html><html><head></head><body><script type="module" src="/main.js"></script></body></html>',
+    );
+    await writeFile(
+      join(buildDir, "main.js"),
+      `import "./main.css"; import icon from "./icon.svg"; globalThis.dropItBuildFixture = { text: ${JSON.stringify(dangerousText)}, replacement: "$&", icon }; import("./lazy.js").then(value => globalThis.dropItLazyBuildFixture = value.default);`,
+    );
+    await writeFile(
+      join(buildDir, "lazy.js"),
+      'export default "embedded lazy chunk";',
+    );
+    await writeFile(
+      join(buildDir, "main.css"),
+      '.fixture::before { content: "</STYLE><p>fixture</p>"; }',
+    );
+    await writeFile(
+      join(buildDir, "icon.svg"),
+      '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>',
+    );
+    const { build } = await import("vite");
+    const result = await build({
+      configFile: false,
+      root: buildDir,
+      base: "./",
+      logLevel: "silent",
+      plugins: [inlineWidget()],
+      build: {
+        write: false,
+        minify: false,
+        modulePreload: false,
+        assetsInlineLimit: () => true,
+        cssCodeSplit: false,
+        rolldownOptions: { output: { codeSplitting: false } },
+      },
+    });
+    assert.ok(!Array.isArray(result) && "output" in result);
+    assert.deepEqual(
+      result.output.map((output) => output.fileName),
+      ["index.html"],
+    );
+    const page = result.output.find(
+      (output) => output.type === "asset" && output.fileName === "index.html",
+    );
+    assert.ok(page && page.type === "asset");
+    const html = String(page.source);
+    assert.doesNotMatch(
+      html,
+      /<script\b[^>]*\bsrc=|<link\b[^>]*\brel="stylesheet"/i,
+    );
+    assert.equal([...html.matchAll(/<script\b/gi)].length, 1);
+    assert.equal([...html.matchAll(/<style\b/gi)].length, 1);
+    const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)![1];
+    const context = globalThis as typeof globalThis & {
+      dropItBuildFixture?: { text: string; replacement: string; icon: string };
+      dropItLazyBuildFixture?: string;
+    };
+    try {
+      await import(
+        `data:text/javascript;base64,${Buffer.from(script).toString("base64")}`
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      const fixture = context.dropItBuildFixture as {
+        text: string;
+        replacement: string;
+        icon: string;
+      };
+      assert.equal(fixture.text, dangerousText);
+      assert.equal(fixture.replacement, "$&");
+      assert.match(fixture.icon, /^data:image\/svg\+xml/);
+      assert.equal(context.dropItLazyBuildFixture, "embedded lazy chunk");
+      assert.match(html, /\\3c \/style/i);
+    } finally {
+      delete context.dropItBuildFixture;
+      delete context.dropItLazyBuildFixture;
+    }
+  } finally {
+    await rm(buildDir, { recursive: true, force: true });
+  }
 });

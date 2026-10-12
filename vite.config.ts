@@ -1,8 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { viteSingleFile } from "vite-plugin-singlefile";
+import { inlineWidget } from "./scripts/inline-widget.js";
 export default defineConfig({
   root: "web",
-  plugins: [react(), viteSingleFile()],
-  build: { outDir: "../dist/web", emptyOutDir: true, sourcemap: false },
+  base: "./",
+  plugins: [react(), inlineWidget()],
+  build: {
+    outDir: "../dist/web",
+    emptyOutDir: true,
+    sourcemap: false,
+    assetsInlineLimit: () => true,
+    cssCodeSplit: false,
+    assetsDir: "",
+    rolldownOptions: { output: { codeSplitting: false } },
+  },
 });
