@@ -33,7 +33,7 @@ services:
       - key: ACCOUNT_MODE
         value: public
       - key: ALLOW_SIGNUP
-        value: "false"
+        value: "true"
       - key: EMAIL_AUTH_ENABLED
         value: "true"
       - key: EMAIL_AUTH_SECRET
