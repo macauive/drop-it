@@ -639,7 +639,8 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
     [after, setAfter] = useState(""),
     [before, setBefore] = useState("");
   const [tagDraft, setTagDraft] = useState("");
-  const [searchMode, setSearchMode] = useState<
+  // Preserve the host's selected mode when paging; new UI searches use both words and meaning.
+  const [requestedSearchMode, setRequestedSearchMode] = useState<
     "keyword" | "semantic" | "hybrid"
   >("hybrid");
   const [data, setData] = useState<SearchResult>({
@@ -717,7 +718,7 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
     setError("");
     const input: SearchInput = {
       query,
-      mode: searchMode,
+      mode: requestedSearchMode,
       view,
       category: category || undefined,
       tag: tag || undefined,
@@ -764,7 +765,7 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
     tag,
     after,
     before,
-    searchMode,
+    requestedSearchMode,
     hasRequestedSearch,
     pageSize,
   ]);
@@ -786,7 +787,7 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
         setTagDraft(input.tag ?? "");
         setAfter(input.after ?? "");
         setBefore(input.before ?? "");
-        setSearchMode(input.mode ?? "hybrid");
+        setRequestedSearchMode(input.mode ?? "hybrid");
         setOffset(input.offset ?? 0);
         setPageSize(input.limit ?? 30);
         setData(presentation.result);
@@ -1074,15 +1075,21 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
               Drops in Trash are permanently deleted after 7 days.
             </p>
           )}
-          {query && data.searchNotice && !loading && !error && (
-            <p className="field-note" role="status">
-              {data.searchNotice}
-            </p>
-          )}
+          {query &&
+            data.searchNotice &&
+            data.aiSearchEnabled !== false &&
+            data.aiAvailable &&
+            !loading &&
+            !error && (
+              <p className="field-note" role="status">
+                {data.searchNotice}
+              </p>
+            )}
           <form
             className="filters"
             onSubmit={(event) => {
               event.preventDefault();
+              setRequestedSearchMode("hybrid");
               setQuery(searchDraft.trim());
               setTag(tagDraft.trim());
               setOffset(0);
@@ -1101,11 +1108,12 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                   setSearchDraft(e.target.value);
                 }}
               />
-              {searchDraft && (
+              {query && searchDraft.trim() === query ? (
                 <button
                   type="button"
                   className="icon-button"
                   aria-label="Clear search"
+                  title="Clear search"
                   onClick={() => {
                     setQuery("");
                     setSearchDraft("");
@@ -1115,16 +1123,17 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                 >
                   <X size={15} />
                 </button>
+              ) : (
+                <button
+                  className="icon-button"
+                  type="submit"
+                  aria-label="Run search"
+                  title="Search"
+                  disabled={loading}
+                >
+                  <ArrowRight size={17} />
+                </button>
               )}
-              <button
-                className="icon-button"
-                type="submit"
-                aria-label="Run search"
-                title="Search"
-                disabled={loading}
-              >
-                <ArrowRight size={17} />
-              </button>
             </label>
             <label className="select-wrap">
               <select
@@ -1211,27 +1220,6 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                 />
               </label>
               <label>
-                Search method
-                <select
-                  value={data.aiSearchEnabled ? searchMode : "keyword"}
-                  onChange={(e) => {
-                    setSearchMode(
-                      e.target.value as "keyword" | "semantic" | "hybrid",
-                    );
-                    setOffset(0);
-                    setHasRequestedSearch(true);
-                  }}
-                >
-                  <option value="keyword">Keyword only</option>
-                  <option value="hybrid" disabled={!data.aiSearchEnabled}>
-                    Words and meaning (AI)
-                  </option>
-                  <option value="semantic" disabled={!data.aiSearchEnabled}>
-                    Meaning only (AI)
-                  </option>
-                </select>
-              </label>
-              <label>
                 Created from
                 <input
                   type="date"
@@ -1258,10 +1246,6 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
                 />
               </label>
             </div>
-            <p className="field-note">
-              Keyword search keeps queries within Drop It. Enable AI search in
-              the website’s Settings to include related meanings.
-            </p>
             <button type="button" onClick={clearFilters}>
               Clear filters
             </button>
@@ -2336,13 +2320,6 @@ function Capture({
             <p className="settings-notice" role="status">
               Shared text or link · Review this unsaved draft before creating a
               drop.
-            </p>
-          )}
-          <p className="field-note">Choose a file below, or paste an image.</p>
-          {storageRemaining !== null && (
-            <p className="field-note">
-              {bytesLabel(Math.max(0, storageRemaining))} attachment space
-              remaining.
             </p>
           )}
           <label
