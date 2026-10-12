@@ -60,6 +60,11 @@ try {
   process.exit(1);
 }
 const origin = new URL(settings.origin).origin;
+const skillFiles = [
+  "skills/capture-content/SKILL.md",
+  "skills/research-library/SKILL.md",
+  "skills/organize-library/SKILL.md",
+];
 const review = JSON.parse(
   await readFile(
     new URL("../release/review-cases.json", import.meta.url),
@@ -99,15 +104,38 @@ try {
     new URL("../release/icon.svg", import.meta.url),
     join(directory, "assets/icon.svg"),
   );
+  for (const path of skillFiles) {
+    // Check every path component so a symlink cannot package files from outside
+    // the reviewed skill folders. Only the listed regular files are copied.
+    const parts = path.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      const entry = await lstat(
+        new URL(`../${parts.slice(0, i).join("/")}`, import.meta.url),
+      );
+      if (
+        entry.isSymbolicLink() ||
+        (i === parts.length ? !entry.isFile() : !entry.isDirectory())
+      )
+        throw new Error(
+          "Skill package inputs must be regular files in real directories.",
+        );
+    }
+    await mkdir(join(directory, ...parts.slice(0, -1)), { recursive: true });
+    await copyFile(
+      new URL(`../${path}`, import.meta.url),
+      join(directory, path),
+    );
+  }
   await writeFile(
     join(directory, ".codex-plugin/plugin.json"),
     JSON.stringify(
       {
         name: "drop-it",
-        version: "0.1.0",
+        version: "0.1.1",
         description: meta.longDescription,
         author: { name: settings.publisher, email: settings.supportEmail },
         mcpServers: "./.mcp.json",
+        skills: "./skills/",
         interface: meta,
         extensions: {
           "com.openai": {
@@ -121,7 +149,7 @@ try {
             publication: {
               countries: settings.countries,
               release_notes:
-                "Initial release of a private saved-for-later library.",
+                "Add capture, library research and library organization skills.",
             },
           },
         },
@@ -138,7 +166,7 @@ try {
       2,
     ),
   );
-  // Archive only the three explicitly prepared files; never the repository.
+  // Archive only the explicitly prepared public files; never the repository.
   const outputDir = resolve("dist");
   await mkdir(outputDir, { recursive: true });
   if ((await lstat(outputDir)).isSymbolicLink())
@@ -148,7 +176,14 @@ try {
   await rm(output, { force: true });
   execFileSync(
     "zip",
-    ["-q", output, ".codex-plugin/plugin.json", ".mcp.json", "assets/icon.svg"],
+    [
+      "-q",
+      output,
+      ".codex-plugin/plugin.json",
+      ".mcp.json",
+      "assets/icon.svg",
+      ...skillFiles,
+    ],
     { cwd: directory, stdio: "pipe" },
   );
   console.log(
