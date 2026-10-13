@@ -64,6 +64,14 @@ const selection = `SELECT i.id, i.source_id AS "sourceId", i.title, i.summary, i
   s.url AS "sourceUrl", EXISTS(SELECT 1 FROM attachments a WHERE a.id=s.attachment_id AND a.owner=s.owner AND a.mime IN ('image/png','image/jpeg','image/webp')) AS "hasImage"
   FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner`;
 type SearchItem = Item & { matchText?: string };
+type ExportSourceRow = Pick<
+  Source,
+  "id" | "originalText" | "url" | "createdAt" | "filename" | "mime"
+> & {
+  attachmentId: string | null;
+  fileBytes: number | null;
+  sha256: string | null;
+};
 const searchSelection = selection.replace(
   "  FROM items",
   ', COALESCE(i.reviewed_transcription,s.original_text) AS "matchText" FROM items',
@@ -875,10 +883,32 @@ export class Library {
       return this.get(owner, data.id, tx);
     });
   }
-  async export(owner: string) {
-    return this.db.transaction(async (tx) => {
-      // Share the owner lock used by saves/deletes for a consistent export.
-      await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [owner]);
+  async export(
+    owner: string,
+    write: (chunk: string) => Promise<void>,
+    signal?: AbortSignal,
+  ) {
+    idSchema.parse(owner);
+    const emit = async (chunk: string) => {
+      signal?.throwIfAborted();
+      await write(chunk);
+    };
+    signal?.throwIfAborted();
+    await this.db.transaction(async (tx) => {
+      // Keep one snapshot for every page. The HTTP caller writes bounded
+      // fragments to a private file, then downloads it after this transaction.
+      await tx.query(
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      );
+      const exists = await tx.query("SELECT id FROM users WHERE id=$1", [
+        owner,
+      ]);
+      if (!exists.rows.length)
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Sign in to export your library.",
+        );
       // v2 includes a file copy per source, even when several sources reuse the
       // same attachment. Bound that amplification before fetching any bytes.
       // Six bytes per text byte safely covers JSON escaping; the fixed allowance
@@ -889,14 +919,14 @@ export class Library {
             octet_length(i.title)::bigint + octet_length(i.summary) + octet_length(i.category)
             + octet_length(array_to_string(i.tags,'')) + octet_length(i.notes) + octet_length(s.url) + COALESCE(octet_length(i.reviewed_transcription),0)
           )) FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner
-          WHERE i.owner=$1 AND (i.trashed_at IS NULL OR i.trashed_at > clock_timestamp()-interval '7 days')),0)
+          WHERE i.owner=$1 AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days')),0)
           + COALESCE((SELECT sum(2048::bigint + 6 * (
             octet_length(s.original_text)::bigint + octet_length(s.url)
             + COALESCE(octet_length(a.filename),0) + COALESCE(octet_length(a.mime),0)
           ) + 4 * ((COALESCE(octet_length(a.bytes),0)::bigint + 2) / 3))
           FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner
           WHERE s.owner=$1 AND EXISTS(SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id
-            AND (i.trashed_at IS NULL OR i.trashed_at > clock_timestamp()-interval '7 days'))),0)
+            AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days'))),0)
           + 1024 AS bytes`,
         [owner],
       );
@@ -906,32 +936,103 @@ export class Library {
           "EXPORT_SIZE",
           "This library exceeds the size limit for a single JSON export.",
         );
-      const items = await tx.query<Item>(
-        `${selection} WHERE i.owner=$1 AND (i.trashed_at IS NULL OR i.trashed_at > clock_timestamp()-interval '7 days') ORDER BY i.created_at`,
-        [owner],
+      await emit(
+        `{"version":2,"exportedAt":${JSON.stringify(new Date().toISOString())},"items":[`,
       );
-      const sources = await tx.query<
-        Source & { mime: string | null; bytes: Uint8Array | null }
-      >(
-        `SELECT s.id,s.original_text AS "originalText",s.url,s.created_at AS "createdAt",a.filename,a.mime,a.bytes FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner WHERE s.owner=$1 AND EXISTS(SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id AND (i.trashed_at IS NULL OR i.trashed_at > clock_timestamp()-interval '7 days'))`,
-        [owner],
-      );
-      return {
-        version: 2,
-        exportedAt: new Date().toISOString(),
-        items: items.rows,
-        sources: sources.rows.map(({ bytes, ...s }) => ({
-          ...s,
-          imageBase64:
-            bytes && isImageMime(s.mime ?? "")
-              ? Buffer.from(bytes).toString("base64")
-              : null,
-          fileBase64:
-            bytes && !isImageMime(s.mime ?? "")
-              ? Buffer.from(bytes).toString("base64")
-              : null,
-        })),
-      };
+      const live =
+        "(i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days')";
+      let afterDate: string | null = null;
+      let afterId: string | null = null;
+      let first = true;
+      for (;;) {
+        signal?.throwIfAborted();
+        const items: { rows: (Item & { cursorDate: string })[] } =
+          await tx.query<Item & { cursorDate: string }>(
+            `${selection.replace("SELECT i.id,", 'SELECT i.created_at::text AS "cursorDate",i.id,')} WHERE i.owner=$1 AND ${live}
+          AND ($2::timestamptz IS NULL OR (i.created_at,i.id)>($2::timestamptz,$3::uuid))
+          ORDER BY i.created_at,i.id LIMIT 100`,
+            [owner, afterDate, afterId],
+          );
+        if (!items.rows.length) break;
+        for (const row of items.rows) {
+          const { cursorDate, ...item } = row;
+          await emit(`${first ? "" : ","}${JSON.stringify(item)}`);
+          first = false;
+          // Keep PostgreSQL's sub-millisecond precision out of JS Date cursors.
+          afterDate = cursorDate;
+          afterId = item.id;
+        }
+      }
+      await emit('],"sources":[');
+      afterId = null;
+      first = true;
+      // v2 stores one base64 string per source. Non-final fragments must be
+      // aligned to three input bytes so concatenation introduces no padding.
+      const chunkBytes = 65535;
+      for (;;) {
+        signal?.throwIfAborted();
+        const sources: { rows: ExportSourceRow[] } =
+          await tx.query<ExportSourceRow>(
+            `SELECT s.id,s.original_text AS "originalText",s.url,s.created_at AS "createdAt",a.filename,a.mime,
+          a.id AS "attachmentId",octet_length(a.bytes) AS "fileBytes",a.digest AS sha256
+          FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner
+          WHERE s.owner=$1 AND ($2::uuid IS NULL OR s.id>$2) AND EXISTS(
+            SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id AND ${live})
+          ORDER BY s.id LIMIT 100`,
+            [owner, afterId],
+          );
+        if (!sources.rows.length) break;
+        for (const row of sources.rows) {
+          const { attachmentId, fileBytes, sha256, ...source } = row;
+          const image = isImageMime(source.mime ?? "");
+          await emit(
+            `${first ? "" : ","}${JSON.stringify(source).slice(0, -1)}`,
+          );
+          first = false;
+          if (attachmentId) {
+            if (
+              !Number.isSafeInteger(fileBytes) ||
+              !fileBytes ||
+              fileBytes < 0 ||
+              fileBytes > 10 * 1024 * 1024
+            )
+              throw new AppError(
+                500,
+                "EXPORT_INTEGRITY",
+                "An original file could not be exported completely.",
+              );
+            await emit(
+              image ? ',"imageBase64":"' : ',"imageBase64":null,"fileBase64":"',
+            );
+            const hash = createHash("sha256");
+            for (let offset = 0; offset < fileBytes; offset += chunkBytes) {
+              signal?.throwIfAborted();
+              const result = await tx.query<{ bytes: Uint8Array }>(
+                "SELECT substring(bytes from $3 for $4) AS bytes FROM attachments WHERE owner=$1 AND id=$2",
+                [owner, attachmentId, offset + 1, chunkBytes],
+              );
+              const bytes = Buffer.from(result.rows[0]?.bytes ?? []);
+              if (bytes.length !== Math.min(chunkBytes, fileBytes - offset))
+                throw new AppError(
+                  500,
+                  "EXPORT_INTEGRITY",
+                  "An original file could not be exported completely.",
+                );
+              hash.update(bytes);
+              await emit(bytes.toString("base64"));
+            }
+            if (hash.digest("hex") !== sha256)
+              throw new AppError(
+                500,
+                "EXPORT_INTEGRITY",
+                "An original file failed its integrity check.",
+              );
+            await emit(image ? '","fileBase64":null}' : '"}');
+          } else await emit(',"imageBase64":null,"fileBase64":null}');
+          afterId = source.id;
+        }
+      }
+      await emit("]}");
     });
   }
 }

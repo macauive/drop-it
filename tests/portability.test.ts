@@ -8,6 +8,7 @@ import { Library } from "../server/library.js";
 import { Portability } from "../server/portability.js";
 import { AppError } from "../server/errors.js";
 import { archiveChunkBytes, previewLifetimeMs } from "../shared/portable.js";
+import { exportLibrary } from "./legacy-export-fixture.js";
 
 let db: Database, library: Library, portability: Portability;
 const owners: string[] = [];
@@ -140,7 +141,7 @@ test("legacy v2 imports stream across UTF-8 and JSON boundaries and retain origi
   await library.save(from, { requestId: randomUUID(), title: "Second source same attachment", allowDuplicate: true, source: {
     originalText: "Another source", attachmentId: saved.source.attachmentId,
   } });
-  const legacy = JSON.stringify(await library.export(from));
+  const legacy = JSON.stringify(await exportLibrary(library, from));
   const preview = await portability.preview(to, input(legacy, 7), "json");
   assert.equal(preview.version, 2);
   assert.ok(preview.warnings.some(warning => warning.includes("no stored integrity checksum")));
@@ -244,7 +245,7 @@ test("portable export avoids legacy source/file amplification beyond the old JSO
     requestId: randomUUID(), title: `Synthetic source ${index}`, allowDuplicate: true,
     source: { attachmentId: uploaded.attachmentId, originalText: `Source ${index}` },
   });
-  await assert.rejects(library.export(from), errorCode("EXPORT_SIZE"));
+  await assert.rejects(exportLibrary(library, from), errorCode("EXPORT_SIZE"));
   const archive = await exportOf(from);
   assert.ok(Buffer.byteLength(archive) < 5 * 1024 * 1024);
   const preview = await portability.preview(to, input(archive), "ndjson");

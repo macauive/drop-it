@@ -15,6 +15,7 @@ import {
 } from "../server/ai.js";
 import { AppError } from "../server/errors.js";
 import { pdfFixture } from "./pdf-fixture.js";
+import { exportLibrary } from "./legacy-export-fixture.js";
 
 const draftResult = {
   title: "Indoor herbs",
@@ -398,7 +399,7 @@ test("file drafts and downloads preserve bytes, owner boundaries and source URLs
     source: { attachmentId: text.attachmentId },
   });
   assert.equal(savedText.source.originalText, "# Full source\nGrow basil");
-  const exported = await library.export(owner);
+  const exported = await exportLibrary(library, owner);
   assert.equal(
     exported.sources.find((source) => source.id === saved.source.id)
       ?.fileBase64,

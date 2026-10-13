@@ -10,6 +10,7 @@ import { openDatabase, migrate } from '../server/db.js';
 import { createApp } from '../server/app.js';
 import { digest } from '../server/library.js';
 import type { Config } from '../server/config.js';
+import { exportLibrary } from './legacy-export-fixture.js';
 
 const password = () => randomBytes(24).toString('base64url');
 async function fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
@@ -55,7 +56,7 @@ test('public registration normalizes usernames, rejects extra fields, and preser
   assert.equal((await f.request(`/api/items/${saved.item.id}`,undefined,cookie)).status,404);
   await assert.rejects(f.library.update(owner,{id:saved.item.id,revision:saved.item.revision,title:'Denied'}));
   await assert.rejects(f.library.delete(owner,{id:saved.item.id,revision:saved.item.revision}));
-  assert.equal((await f.library.export(owner)).items.length,0);
+  assert.equal((await exportLibrary(f.library, owner)).items.length,0);
   f.config.signupEnabled=false;
   await assert.rejects(f.auth.register('closed',password()));
 }));

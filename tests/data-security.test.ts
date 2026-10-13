@@ -15,6 +15,7 @@ import { AppError } from "../server/errors.js";
 import { similarity } from "../server/semantic.js";
 import type { Config } from "../server/config.js";
 import type { AIProvider } from "../server/ai.js";
+import { exportLibrary } from "./legacy-export-fixture.js";
 
 let dir: string, db: Database, library: Library;
 const owner = randomUUID(),
@@ -93,13 +94,13 @@ test("request IDs, duplicate detection, file downloads and exports remain isolat
     library.restore(other, { id: owned.item.id, revision: 1 }),
     code("NOT_FOUND"),
   );
-  const exported = await library.export(other);
+  const exported = await exportLibrary(library, other);
   assert.equal(JSON.stringify(exported).includes(marker), false);
   assert.equal(
     exported.items.some((item) => item.id === owned.item.id),
     false,
   );
-  const ownExport = await library.export(owner);
+  const ownExport = await exportLibrary(library, owner);
   assert.equal(
     ownExport.sources.find((source) => source.id === owned.source.id)
       ?.fileBase64,
@@ -503,10 +504,10 @@ test("export rejects shared-file amplification before loading file bodies and do
       ),
   };
   await assert.rejects(
-    new Library(guarded).export(exportOwner),
+    exportLibrary(new Library(guarded), exportOwner),
     code("EXPORT_SIZE"),
   );
   assert.equal(bodiesRead, false);
-  assert.ok((await library.export(other)).items.length > 0);
+  assert.ok((await exportLibrary(library, other)).items.length > 0);
   assert.equal((await library.search(exportOwner, {})).total, 97);
 });

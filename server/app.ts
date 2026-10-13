@@ -8,6 +8,8 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { ChatGPT } from "./chatgpt.js";
 import { createHash, randomBytes } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -37,6 +39,7 @@ import { sharedCaptureSchema } from "../shared/capture.js";
 import sharp from "sharp";
 import { appIconSvg } from "./public-brand.js";
 import { thumbnail } from "./thumbnails.js";
+import { stageLegacyExport } from "./export-file.js";
 
 const appIconPng: Partial<Record<192 | 512, Promise<Buffer>>> = {};
 function pngAppIcon(size: 192 | 512) {
@@ -658,8 +661,7 @@ export function createApp(
       }),
     );
   });
-  // Exports can include the full attachment quota. Hold the slot until the
-  // response finishes so slow downloads cannot accumulate serialized copies.
+  // Keep one legacy export active through both its snapshot work and response.
   let exportActive = false;
   app.get(
     "/api/export",
@@ -671,7 +673,7 @@ export function createApp(
       legacyHeaders: false,
       message: { error: "Too many exports. Please wait a minute." },
     }),
-    async (_req, res) => {
+    async (_req, res, next) => {
       if (exportActive)
         throw new AppError(
           429,
@@ -679,6 +681,12 @@ export function createApp(
           "An export is already running. Try again shortly.",
         );
       exportActive = true;
+      const controller = new AbortController();
+      const deadline = setTimeout(() => {
+        controller.abort();
+        res.destroy();
+      }, 5 * 60000);
+      let staged: Awaited<ReturnType<typeof stageLegacyExport>> | undefined;
       let buildComplete = false;
       let responseComplete = false;
       const release = () => {
@@ -688,18 +696,37 @@ export function createApp(
         res.off("close", responseEnded);
       };
       const responseEnded = () => {
+        clearTimeout(deadline);
+        if (!res.writableFinished) controller.abort();
         responseComplete = true;
         release();
       };
       res.once("finish", responseEnded);
       res.once("close", responseEnded);
       try {
-        const exported = await library.export(res.locals.owner);
-        if (!res.destroyed)
-          res.attachment("drop-it-library.json").json(exported);
+        staged = await stageLegacyExport(
+          library,
+          res.locals.owner,
+          controller.signal,
+        );
+        buildComplete = true;
+        res.attachment("drop-it-library.json").type("application/json");
+        res.set("Content-Security-Policy", "sandbox");
+        await pipeline(
+          createReadStream(staged.path, { highWaterMark: 65536 }),
+          res,
+          { signal: controller.signal },
+        );
+      } catch (error) {
+        if (controller.signal.aborted || res.headersSent) res.destroy();
+        else {
+          res.removeHeader("Content-Disposition");
+          next(error);
+        }
       } finally {
         buildComplete = true;
         release();
+        await staged?.dispose();
       }
     },
   );

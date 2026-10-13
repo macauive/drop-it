@@ -10,6 +10,7 @@ import { Library } from "../server/library.js";
 import { cleanupExpired } from "../server/maintenance.js";
 import { AppError } from "../server/errors.js";
 import { importChatGPTFile } from "../server/files.js";
+import { exportLibrary } from "./legacy-export-fixture.js";
 
 let dir: string, db: Database, library: Library;
 const owner = randomUUID(),
@@ -116,7 +117,7 @@ test("owner isolation covers reads, search, changes, source reuse, images and ex
     isError("NOT_FOUND"),
   );
   assert.equal((await library.search(other, {})).total, 0);
-  const exported = await library.export(other);
+  const exported = await exportLibrary(library, other);
   assert.equal(exported.items.length, 0);
   assert.equal(exported.sources.length, 0);
 });
@@ -270,14 +271,14 @@ test("file import refuses arbitrary and loopback destinations before network acc
 });
 
 test("export includes original image bytes and survives database reopening", async () => {
-  const expected = await library.export(owner);
+  const expected = await exportLibrary(library, owner);
   assert.ok(expected.items.length > 0);
   assert.ok(expected.sources.some((source) => source.imageBase64));
   await db.close();
   db = await openDatabase({ dataDir: dir });
   await migrate(db);
   library = new Library(db);
-  const actual = await library.export(owner);
+  const actual = await exportLibrary(library, owner);
   assert.deepEqual(actual.items, expected.items);
   assert.deepEqual(actual.sources, expected.sources);
 });

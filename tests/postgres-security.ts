@@ -16,6 +16,7 @@ import { migrate, openDatabase, type Database } from "../server/db.js";
 import { digest, Library } from "../server/library.js";
 import { cleanupExpired } from "../server/maintenance.js";
 import { AppError } from "../server/errors.js";
+import { exportLibrary } from "./legacy-export-fixture.js";
 
 const runFile = promisify(execFile);
 const binary = (name: string) => `/opt/homebrew/bin/${name}`;
@@ -301,7 +302,7 @@ try {
         isCode("NOT_FOUND"),
       );
       assert.equal((await library.search(other, {})).total, 0);
-      assert.equal((await library.export(other)).items.length, 0);
+      assert.equal((await exportLibrary(library, other)).items.length, 0);
     },
   );
 
@@ -524,7 +525,7 @@ try {
         source: { attachmentId: file.attachmentId },
       });
       const [exported] = await Promise.all([
-        library.export(owner),
+        exportLibrary(library, owner),
         library.update(owner, {
           id: saved.item.id,
           revision: 1,
@@ -599,7 +600,7 @@ try {
         0,
       );
       assert.equal(
-        (await library.export(owner)).sources.some(
+        (await exportLibrary(library, owner)).sources.some(
           (source) => source.id === first.source.id,
         ),
         false,
@@ -611,7 +612,7 @@ try {
     "migration 7 preserves real legacy sessions, owner records and library data",
     async () => {
       const legacySession = await auth.session(owner);
-      const before = await library.export(owner);
+      const before = await exportLibrary(library, owner);
       await database.query("DROP INDEX sessions_owner_seen");
       await database.query(
         "ALTER TABLE sessions DROP COLUMN id, DROP COLUMN label, DROP COLUMN created_at, DROP COLUMN last_seen_at",
@@ -627,7 +628,7 @@ try {
       assert.equal(metadata.sessions[0].current, true);
       assert.equal(metadata.sessions[0].label, "Existing browser session");
       assert.equal(metadata.recoveryEnabled, false);
-      const after = await library.export(owner);
+      const after = await exportLibrary(library, owner);
       assert.deepEqual(after.items, before.items);
       assert.deepEqual(after.sources, before.sources);
     },
@@ -867,7 +868,7 @@ try {
       "SELECT * FROM oauth_tokens WHERE owner=$1 ORDER BY hash",
       [accountOwner],
     );
-    const exported = await library.export(accountOwner);
+    const exported = await exportLibrary(library, accountOwner);
     return {
       user: user.rows,
       sessions: sessions.rows,

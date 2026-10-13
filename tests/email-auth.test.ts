@@ -11,6 +11,7 @@ import { createApp } from "../server/app.js";
 import { EmailAuth, type EmailSender } from "../server/email-auth.js";
 import type { Config } from "../server/config.js";
 import { digest } from "../server/library.js";
+import { exportLibrary } from "./legacy-export-fixture.js";
 
 const password = () => randomBytes(24).toString("base64url");
 async function setup() {
@@ -182,7 +183,7 @@ test("email signup creates no account or session before verification, normalizes
       (await f.request(`/api/items/${item.item.id}`, undefined, cookie)).status,
       404,
     );
-    assert.equal((await f.library.export(owner)).items.length, 0);
+    assert.equal((await exportLibrary(f.library, owner)).items.length, 0);
     await assert.rejects(
       f.emailAuth.verify("signup", { requestId, code: f.code() }, pass),
     );

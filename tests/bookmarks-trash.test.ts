@@ -8,6 +8,7 @@ import { openDatabase, migrate, type Database } from "../server/db.js";
 import { Library } from "../server/library.js";
 import { cleanupExpired } from "../server/maintenance.js";
 import { searchSchema, updateSchema } from "../shared/schema.js";
+import { exportLibrary } from "./legacy-export-fixture.js";
 
 async function fixture(
   run: (
@@ -214,7 +215,7 @@ test("expiry enforces the seven-day boundary and only cleans unreferenced owned 
       [second.item.id],
     );
     await assert.rejects(lib.file(owner, first.source.id), code("NOT_FOUND"));
-    const exported = await lib.export(owner);
+    const exported = await exportLibrary(lib, owner);
     assert.equal(exported.items.length, 0);
     assert.equal(exported.sources.length, 0);
     await cleanupExpired(db);

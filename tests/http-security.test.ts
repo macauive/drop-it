@@ -1,15 +1,56 @@
-import { after, before, test } from "node:test";
+import { after, before, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, request as httpRequest, type Server } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { once } from "node:events";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gzipSync } from "node:zlib";
+import type { RequestHandler } from "express";
 import { createApp } from "../server/app.js";
 import { loadConfig, type Config } from "../server/config.js";
 import { migrate, openDatabase } from "../server/db.js";
+
+// A disconnected client stops waiting before the server finishes its cleanup.
+// Observe the async route boundary so retries test completed cleanup reliably.
+function nextExportCompletion(
+  t: TestContext,
+  app: ReturnType<typeof createApp>["app"],
+) {
+  const router = app.router as {
+    stack: { route?: { path: string; stack: { handle: RequestHandler }[] } }[];
+  };
+  const route = router.stack.find(
+    (entry) => entry.route?.path === "/api/export",
+  )!.route!;
+  const handler = route.stack.at(-1)!;
+  const original = handler.handle;
+  let entered = false;
+  let finished!: () => void;
+  const completion = new Promise<void>((resolve) => {
+    finished = resolve;
+  });
+  t.mock.method(
+    handler,
+    "handle",
+    async (...args: Parameters<RequestHandler>) => {
+      const observed = !entered;
+      entered = true;
+      try {
+        return await original(...args);
+      } finally {
+        if (observed) finished();
+      }
+    },
+  );
+  return completion;
+}
 
 async function fixture(publicOrigin?: string) {
   const dir = await mkdtemp(join(tmpdir(), "drop-it-http-security-"));
@@ -395,6 +436,7 @@ test("login rate limits cannot be reset by a spoofed proxy address", async () =>
 test("export slot remains held during aborted builds and releases after completion", async (t) => {
   const isolated = await fixture();
   try {
+    const finished = nextExportCompletion(t, isolated.app);
     let release!: () => void;
     let started!: () => void;
     const entered = new Promise<void>((resolve) => {
@@ -407,10 +449,10 @@ test("export slot remains held during aborted builds and releases after completi
     const mock = t.mock.method(
       isolated.library,
       "export",
-      async (owner: string) => {
+      async (...args: Parameters<typeof original>) => {
         started();
         await hold;
-        return original(owner);
+        return original(...args);
       },
     );
     const controller = new AbortController();
@@ -424,7 +466,10 @@ test("export slot remains held during aborted builds and releases after completi
     await assert.rejects(first);
     assert.equal((await isolated.request("/api/export")).status, 429);
     release();
-    await mock.mock.calls[0].result;
+    const inFlight = mock.mock.calls[0].result;
+    assert.ok(inFlight);
+    await assert.rejects(inFlight, { name: "AbortError" });
+    await finished;
     const completed = await isolated.request("/api/export");
     assert.equal(completed.status, 200);
     assert.equal((await completed.json()).items.length, 0);
@@ -446,6 +491,141 @@ test("failed export releases capacity for a successful retry", async (t) => {
     mock.mock.restore();
     assert.equal((await isolated.request("/api/export")).status, 200);
   } finally {
+    await isolated.close();
+  }
+});
+
+test("legacy download backpressure leaves the database usable and disconnect releases its slot", async (t) => {
+  const isolated = await fixture();
+  let response: ServerResponse | undefined;
+  try {
+    const owner = (await isolated.auth.sessionOwner(isolated.session))!;
+    const bytes = Buffer.from("漢".repeat(33000));
+    const upload = await isolated.library.upload(
+      owner,
+      bytes,
+      "text/plain",
+      "slow.txt",
+    );
+    await isolated.library.save(owner, {
+      requestId: randomUUID(),
+      title: "Synthetic slow original",
+      source: { attachmentId: upload.attachmentId },
+    });
+    let wrote!: () => void;
+    let writes = 0;
+    const blocked = new Promise<void>((resolve) => {
+      wrote = resolve;
+    });
+    isolated.server.prependListener("request", (req, res) => {
+      if (req.url !== "/api/export") return;
+      response = res;
+      res.cork();
+      const original = res.write.bind(res);
+      t.mock.method(res, "write", (chunk: Buffer) => {
+        writes++;
+        const accepted = original(chunk);
+        wrote();
+        return accepted;
+      });
+    });
+    const first = fetch(isolated.target + "/api/export", {
+      headers: { Cookie: isolated.cookie },
+    });
+    await blocked;
+    assert.equal(writes, 1);
+    assert.equal(response!.writableFinished, false);
+    const session = await Promise.race([
+      isolated.request("/api/session"),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("download retained the database transaction")),
+          3000,
+        );
+        timer.unref();
+      }),
+    ]);
+    assert.equal((await session.json()).authenticated, true);
+    response!.uncork();
+    const downloaded = await first;
+    assert.equal(downloaded.status, 200);
+    assert.match(
+      downloaded.headers.get("content-disposition") ?? "",
+      /drop-it-library\.json/,
+    );
+    assert.equal(downloaded.headers.get("content-security-policy"), "sandbox");
+    const archive = await downloaded.json();
+    assert.equal(archive.version, 2);
+    assert.deepEqual(
+      Buffer.from(archive.sources[0].fileBase64, "base64"),
+      bytes,
+    );
+
+    const blockedAgain = new Promise<void>((resolve) => {
+      wrote = resolve;
+    });
+    const finished = nextExportCompletion(t, isolated.app);
+    const controller = new AbortController();
+    const second = fetch(isolated.target + "/api/export", {
+      headers: { Cookie: isolated.cookie },
+      signal: controller.signal,
+    }).then((res) => res.text());
+    await blockedAgain;
+    controller.abort();
+    await assert.rejects(second);
+    await finished;
+    isolated.server.removeAllListeners("request");
+    isolated.server.on("request", isolated.app);
+    assert.equal((await isolated.request("/api/export")).status, 200);
+  } finally {
+    response?.uncork();
+    await isolated.close();
+  }
+});
+
+test("legacy download deadline stays active until response finish", async (t) => {
+  const isolated = await fixture();
+  try {
+    let response!: ServerResponse;
+    let reachedEnd!: () => void;
+    const ending = new Promise<void>((resolve) => {
+      reachedEnd = resolve;
+    });
+    isolated.server.prependListener("request", (req, res) => {
+      if (req.url !== "/api/export") return;
+      response = res;
+      // Model a final socket write whose finish has not been delivered yet.
+      t.mock.method(res, "end", () => {
+        reachedEnd();
+        return res;
+      });
+    });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const download = new Promise<void>((resolve, reject) => {
+      const req = httpRequest(
+        isolated.target + "/api/export",
+        { headers: { Cookie: isolated.cookie } },
+        (res) => {
+          res.resume();
+          res.once("end", resolve);
+          res.once("error", reject);
+        },
+      );
+      req.once("error", reject);
+      req.end();
+    });
+    const rejected = assert.rejects(download);
+    await ending;
+    assert.equal(response.writableFinished, false);
+    t.mock.timers.tick(5 * 60000);
+    assert.equal(response.destroyed, true);
+    await rejected;
+    t.mock.timers.reset();
+    isolated.server.removeAllListeners("request");
+    isolated.server.on("request", isolated.app);
+    assert.equal((await isolated.request("/api/export")).status, 200);
+  } finally {
+    t.mock.timers.reset();
     await isolated.close();
   }
 });

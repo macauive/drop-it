@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { openDatabase, migrate } from "../server/db.js";
 import { createApp } from "../server/app.js";
 import { provisionAccount, AccountProvisioningError } from "../server/account-provisioning.js";
+import { exportLibrary } from "./legacy-export-fixture.js";
 
 test("operator account creation preserves owner data, closed signup, and existing credentials", async () => {
   const dir = await mkdtemp(join(tmpdir(), "drop-it-provision-"));
@@ -34,7 +35,7 @@ test("operator account creation preserves owner data, closed signup, and existin
     const session = await auth.login(password, undefined, "sample_user");
     const newOwner = (await auth.sessionOwner(session))!;
     assert.notEqual(newOwner, owner);
-    assert.equal((await library.export(newOwner)).items.length, 0);
+    assert.equal((await exportLibrary(library, newOwner)).items.length, 0);
     await assert.rejects(library.get(newOwner, item.item.id));
     await assert.rejects(auth.register("another", password));
     for (const username of ["sample_USER", "owner", " OWNER ", "../../x", "a", "x".repeat(41)])
