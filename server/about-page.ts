@@ -229,7 +229,7 @@ export function renderAboutPage(publisher: string) {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 64px;
-      background: #fff;
+      background: var(--surface);
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 36px 40px;
@@ -269,6 +269,27 @@ export function renderAboutPage(publisher: string) {
       content: "✓";
       color: var(--blue);
       font-weight: 600;
+    }
+    @media (prefers-color-scheme: dark) {
+      .button { background: #1b559b; }
+      .button:hover { background: #1b5291; }
+      .collection {
+        background: #0f1113;
+        border-color: var(--line);
+        box-shadow: none;
+      }
+      .collection-heading,
+      .collection-caption,
+      .sample-type,
+      .sample-top svg { color: var(--muted); }
+      .sample {
+        background: #14171a;
+        border-color: var(--line);
+        box-shadow: none;
+      }
+      .tag { background: #18283d; color: #a8cfff; }
+      .note { background: #17150f; border-color: #302718; }
+      .note .tag { background: #302718; color: #efd198; }
     }
     @media (min-width: 1400px) {
       .hero {

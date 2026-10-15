@@ -7,7 +7,9 @@ export const appIconSvg = readFileSync(
 );
 const faviconIco = readFileSync(new URL("../web/favicon.ico", import.meta.url));
 export const publicBrandHead = `
-  <meta name="theme-color" content="#f8f9fb">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f8f9fb" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#090a0b" media="(prefers-color-scheme: dark)">
   <link rel="icon" type="image/x-icon" href="data:image/x-icon;base64,${faviconIco.toString("base64")}">
   <link rel="icon" type="image/svg+xml" sizes="any" href="data:image/svg+xml,${encodeURIComponent(appIconSvg)}">`;
 const brandMark = appIconSvg.replace(
@@ -29,6 +31,21 @@ export const publicBrandStyles = `
       --blue: #1764c0;
       --muted: #626c78;
       --line: #e0e5ec;
+      --text: #242932;
+      --surface: #fff;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color: #f1f3f5;
+        background: #090a0b;
+        --blue: #82b8ff;
+        --muted: #a3aab4;
+        --line: #282c31;
+        --text: #f1f3f5;
+        --surface: #0f1113;
+        color-scheme: dark;
+      }
     }
     * {
       box-sizing: border-box;
@@ -70,7 +87,7 @@ export const publicBrandStyles = `
       left: 12px;
       transform: translateY(-200%);
       padding: 12px;
-      background: white;
+      background: var(--surface);
       z-index: 5;
     }
     .skip:focus {
@@ -134,7 +151,7 @@ export const publicBrandStyles = `
       overflow-wrap: anywhere;
     }
     .footer-credit strong {
-      color: #242932;
+      color: var(--text);
       font-weight: 600;
     }
     footer nav {

@@ -158,27 +158,11 @@ p {
   white-space: nowrap;
 }
 .brand-icon {
-  position: relative;
-  display: grid;
-  place-items: center;
+  display: block;
+  flex-shrink: 0;
   width: 32px;
   height: 32px;
-  background: var(--accent);
-  color: #fff;
-  border-radius: 8px;
-}
-.brand-icon > svg {
-  transform: translateY(-3px);
-}
-.brand-tray {
-  position: absolute;
-  bottom: 5px;
-  left: 8px;
-  width: 16px;
-  height: 4px;
-  border: 1.5px solid currentColor;
-  border-top: 0;
-  border-radius: 0 0 2px 2px;
+  object-fit: contain;
 }
 .brand-dot {
   color: var(--accent);
@@ -1669,9 +1653,6 @@ html[data-theme="dark"] .settings-notice {
 html[data-theme="dark"] .empty-icon {
   border-color: var(--line);
   color: var(--accent);
-}
-html[data-theme="dark"] .brand-icon {
-  background: #2365b3;
 }
 html[data-theme="dark"] .primary {
   background: #1b559b;

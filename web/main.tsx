@@ -7,6 +7,7 @@ import React, {
   useId,
 } from "react";
 import { createRoot } from "react-dom/client";
+import brandIcon from "./favicon.svg";
 import { DropPreview } from "./drop-preview.js";
 import { suggestCaptureTitle } from "./capture-title.js";
 import { poolTone } from "./pool-colors.js";
@@ -22,7 +23,6 @@ import {
 } from "./sidebar.js";
 import {
   ArrowDownToLine,
-  Droplet,
   Sparkles,
   ArrowRight,
   ArrowUpRight,
@@ -168,10 +168,7 @@ const deletionDate = (value: string) =>
 function Brand() {
   return (
     <div className="brand">
-      <span className="brand-icon" aria-hidden="true">
-        <Droplet size={19} strokeWidth={1.8} />
-        <span className="brand-tray" />
-      </span>
+      <img className="brand-icon" src={brandIcon} alt="" width={32} height={32} />
       <span className="brand-name">
         drop it<span className="brand-dot">.</span>
       </span>
