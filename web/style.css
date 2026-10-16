@@ -1809,5 +1809,5 @@ html[data-theme="dark"] .notice {
   display: none;
 }
 .empty > button + button {
-  margin-left: 8px;
+  margin-top: 12px;
 }

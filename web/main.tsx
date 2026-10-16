@@ -1204,30 +1204,28 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
               <ChevronDown size={14} />
             </label>
           </form>
-          <div className="search-scope" aria-label="Search scope">
-            <span>
-              Searching{" "}
-              {view === "All drops" ? "all drops" : view.toLowerCase()}
-            </span>
-            {filters.map((filter) => (
-              <button
-                type="button"
-                className="filter-chip"
-                key={filter.label}
-                aria-label={`Remove filter ${filter.label}`}
-                onClick={() => {
-                  filter.remove();
-                  setOffset(0);
-                  setHasRequestedSearch(true);
-                }}
-              >
-                {filter.label}
-                <X size={13} aria-hidden="true" />
-              </button>
-            ))}
-          </div>
+          {filters.length > 0 && (
+            <div className="search-scope" aria-label="Active filters">
+              {filters.map((filter) => (
+                <button
+                  type="button"
+                  className="filter-chip"
+                  key={filter.label}
+                  aria-label={`Remove filter ${filter.label}`}
+                  onClick={() => {
+                    filter.remove();
+                    setOffset(0);
+                    setHasRequestedSearch(true);
+                  }}
+                >
+                  {filter.label}
+                  <X size={13} aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          )}
           <details className="search-options">
-            <summary>Search options</summary>
+            <summary>Filters</summary>
             <div className="form-grid">
               <label>
                 Tag
