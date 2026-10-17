@@ -7,6 +7,7 @@ import type { Library } from "./library.js";
 // accounts or arbitrary URLs supplied by a model or an uploaded document.
 const chatGPTFileHosts = new Set([
   "files.oaiusercontent.com",
+  "sdmntprcentralus.oaiusercontent.com",
   "oaisdmntprcentralus.blob.core.windows.net",
 ]);
 

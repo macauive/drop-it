@@ -89,6 +89,14 @@ test("file-import SSRF defenses reject host, scheme, credential and port bypasse
     "https://oaisdmntprcentralus.blob.core.windows.net:8443/file",
     "http://oaisdmntprcentralus.blob.core.windows.net/file",
     "https://user:pass@oaisdmntprcentralus.blob.core.windows.net/file",
+    "http://sdmntprcentralus.oaiusercontent.com/file",
+    "https://sdmntprcentralus.oaiusercontent.com.evil.example/file",
+    "https://evil.sdmntprcentralus.oaiusercontent.com/file",
+    "https://sdmntprcentralus.oaiusercontent.com./file",
+    "https://sdmntprcentralus.oaiusercontent.com:8443/file",
+    "https://user:pass@sdmntprcentralus.oaiusercontent.com/file",
+    "https://sdmntprcentralus.oaiusercontent.com@127.0.0.1/file",
+    "https://unobserved.oaiusercontent.com/file",
     "file:///private/synthetic.txt",
     "data:text/plain,synthetic",
   ]) {
@@ -116,6 +124,40 @@ test("the observed ChatGPT Azure host preserves original bytes without forwardin
     assert.equal(validated.mime, "image/png");
     return { attachmentId: randomUUID(), originalText: validated.originalText };
   }), owner, { download_url, file_id: "synthetic-file" });
+});
+
+test("the observed oaiusercontent delivery host preserves TXT and PNG originals with safe fetch options", async (t) => {
+  const png = await sharp({ create: { width: 12, height: 12, channels: 3, background: "white" } }).png().toBuffer();
+  for (const [bytes, mime, filename] of [
+    [Buffer.from("Synthetic source text\n"), "text/plain", "notes.txt"],
+    [png, "image/png", "screenshot.png"],
+  ] as const) {
+    const download_url = "https://sdmntprcentralus.oaiusercontent.com/synthetic-file";
+    let signal: AbortSignal | null | undefined;
+    const request = t.mock.method(globalThis, "fetch", async (url: Parameters<typeof fetch>[0], options?: RequestInit) => {
+      assert.equal(String(url), download_url);
+      assert.equal(options?.redirect, "error");
+      assert.equal(options?.headers, undefined);
+      assert.ok(options?.signal instanceof AbortSignal);
+      signal = options.signal;
+      return new Response(bytes, { headers: { "content-type": mime } });
+    });
+    let uploads = 0;
+    await importChatGPTFile(library(async (receivedOwner, received, receivedMime, name) => {
+      uploads++;
+      assert.equal(receivedOwner, owner);
+      assert.deepEqual(received, bytes);
+      const validated = await validateUpload(received, receivedMime, name);
+      assert.equal(validated.mime, mime);
+      assert.equal(validated.filename, filename);
+      if (mime === "text/plain") assert.equal(validated.originalText, bytes.toString());
+      return { attachmentId: randomUUID(), originalText: validated.originalText };
+    }), owner, { download_url, file_id: "synthetic-file", file_name: filename });
+    assert.equal(uploads, 1);
+    assert.equal(request.mock.callCount(), 1);
+    assert.equal(signal?.aborted, true);
+    t.mock.restoreAll();
+  }
 });
 
 test("rejected download diagnostics expose only the hostname, never signed URLs or credentials", async () => {
