@@ -16,7 +16,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Database } from "./db.js";
 import type { Config } from "./config.js";
 import { Auth } from "./auth.js";
-import { EmailAuth, smtpEmailSender, type EmailSender } from "./email-auth.js";
+import { EmailAuth } from "./email-auth.js";
+import { resendEmailSender, type EmailSender } from "./email-delivery.js";
 import { Library } from "./library.js";
 import { createMcpServer } from "./mcp.js";
 import { AppError } from "./errors.js";
@@ -70,10 +71,7 @@ export function createApp(
     auth,
     config,
     emailSender ??
-      (config.emailAuth ? smtpEmailSender(config.emailAuth) : undefined),
-  );
-  auth.setPasswordChangedNotifier((email) =>
-    emailAuth.notifyPasswordChanged(email),
+      (config.emailAuth ? resendEmailSender(config.emailAuth) : undefined),
   );
   const chatgpt = new ChatGPT(db, auth, config, chatgptTransport);
   const siteAI = ai ?? (config.ai ? new OpenAIProvider(config.ai) : undefined);

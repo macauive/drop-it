@@ -30,6 +30,9 @@ export async function cleanupExpired(db: Database) {
     });
   }
   await db.transaction(async (tx) => {
+    await tx.query(
+      "DELETE FROM email_outbox WHERE expires_at < now()-interval '7 days'",
+    );
     await tx.query("DELETE FROM email_challenges WHERE expires_at < now()");
     await tx.query(
       "DELETE FROM email_request_limits WHERE last_at < now()-interval '1 day'",

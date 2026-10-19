@@ -185,8 +185,8 @@ export function loadConfig() {
 export type EmailAuthConfig = {
   secret: string;
   from: string;
-  username: string;
-  password: string;
+  apiKey: string;
+  deliveryKey: string;
 };
 function loadEmailAuthConfig(): EmailAuthConfig | undefined {
   if (
@@ -202,9 +202,15 @@ function loadEmailAuthConfig(): EmailAuthConfig | undefined {
       .max(254)
       .email()
       .regex(/^[^\s<>\r\n,;]+@[^\s<>\r\n,;]+$/)
-      .parse(process.env.SMTP_FROM),
-    username: z.string().min(1).max(254).parse(process.env.SMTP_USERNAME),
-    password: z.string().min(1).max(4096).parse(process.env.SMTP_PASSWORD),
+      .parse(process.env.RESEND_FROM),
+    apiKey: z
+      .string()
+      .regex(/^re_[A-Za-z0-9_-]{10,200}$/)
+      .parse(process.env.RESEND_API_KEY),
+    deliveryKey: z
+      .string()
+      .regex(/^[a-fA-F0-9]{64}$/)
+      .parse(process.env.EMAIL_DELIVERY_KEY),
   };
 }
 

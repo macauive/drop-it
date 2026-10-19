@@ -38,11 +38,11 @@ services:
         value: "true"
       - key: EMAIL_AUTH_SECRET
         sync: false
-      - key: SMTP_FROM
+      - key: RESEND_FROM
         sync: false
-      - key: SMTP_USERNAME
+      - key: RESEND_API_KEY
         sync: false
-      - key: SMTP_PASSWORD
+      - key: EMAIL_DELIVERY_KEY
         sync: false
       - key: TRUST_PROXY_HOPS
         value: "1"

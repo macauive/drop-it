@@ -1,64 +1,114 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import type SMTPTransport from "nodemailer/lib/smtp-transport/index.js";
-import type { SendMailOptions } from "nodemailer";
-import { smtpEmailSender } from "../server/email-auth.js";
+import { randomBytes, randomUUID } from "node:crypto";
+import {
+  resendEmailSender,
+  EmailDeliveryError,
+} from "../server/email-delivery.js";
 const config = () => ({
   secret: randomBytes(32).toString("hex"),
   from: "sender@example.test",
-  username: randomBytes(24).toString("hex"),
-  password: randomBytes(24).toString("hex"),
+  apiKey: "re_" + randomBytes(24).toString("hex"),
+  deliveryKey: randomBytes(32).toString("hex"),
+});
+const delivery = () => ({
+  id: randomUUID(),
+  from: "sender@example.test",
+  subject: "Synthetic subject",
+  text: "Synthetic body",
 });
 
-test("SMTP uses mandatory validated TLS and confirmation mail contains no password or code", async () => {
+test("Resend uses a fixed HTTPS endpoint, stable idempotency and refuses redirects", async () => {
   const settings = config(),
-    messages: SendMailOptions[] = [];
-  let options: SMTPTransport.Options | undefined,
-    closes = 0;
-  const send = smtpEmailSender(settings, (input) => {
-    options = input;
-    return {
-      sendMail: async (message) => {
-        messages.push(message);
-        return {};
-      },
-      close: () => {
-        closes++;
-      },
-    };
+    meta = delivery(),
+    providerId = randomUUID();
+  const requests: RequestInit[] = [];
+  const send = resendEmailSender(settings, async (url, options) => {
+    assert.equal(url, "https://api.resend.com/emails");
+    requests.push(options!);
+    return Response.json({ id: providerId });
   });
-  const sentinel = randomBytes(24).toString("hex");
-  await send("recipient@example.test", sentinel, "password-changed");
-  assert.equal(options!.host, "smtp.protonmail.ch");
-  assert.equal(options!.requireTLS, true);
-  assert.equal(options!.tls!.rejectUnauthorized, true);
-  assert.equal(options!.logger, false);
-  assert.equal(options!.debug, false);
-  assert.equal(options!.disableFileAccess, true);
-  assert.equal(options!.disableUrlAccess, true);
-  assert.equal(messages[0].subject, "Your Drop It password was changed");
-  for (const secret of [sentinel, settings.password, settings.secret])
-    assert.equal(JSON.stringify(messages[0]).includes(secret), false);
-  assert.match(
-    String(messages[0].text),
-    /reset your password or contact support/,
+  assert.equal(
+    await send("recipient@example.test", "", "password-changed", meta),
+    providerId,
   );
-  assert.equal(closes, 1);
+  await send("recipient@example.test", "", "password-changed", meta);
+  assert.equal(requests[0].redirect, "error");
+  assert.equal(requests[0].body, requests[1].body);
+  const headers = new Headers(requests[0].headers);
+  assert.equal(headers.get("authorization"), `Bearer ${settings.apiKey}`);
+  assert.equal(headers.get("idempotency-key"), `drop-it/${meta.id}`);
+  assert.deepEqual(JSON.parse(String(requests[0].body)), {
+    from: "Drop It <sender@example.test>",
+    to: ["recipient@example.test"],
+    subject: meta.subject,
+    text: meta.text,
+  });
+  for (const secret of [settings.apiKey, settings.deliveryKey, settings.secret])
+    assert.equal(String(requests[0].body).includes(secret), false);
 });
 
-test("a stalled SMTP submission times out before the service shutdown deadline", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  let closes = 0;
-  const send = smtpEmailSender(config(), () => ({
-    sendMail: () => new Promise(() => {}),
-    close: () => {
-      closes++;
+test("Resend retries network, throttling and concurrent-key failures but stops permanent rejections", async () => {
+  for (const [status, name, retryable] of [
+    [429, "rate_limit_exceeded", true],
+    [500, "application_error", true],
+    [503, "service_unavailable", true],
+    [409, "concurrent_idempotent_requests", true],
+    [409, "invalid_idempotent_request", false],
+    [400, "validation_error", false],
+    [401, "validation_error", false],
+    [403, "restricted_api_key", false],
+    [422, "validation_error", false],
+  ] as const) {
+    const send = resendEmailSender(config(), async () =>
+      Response.json(
+        { name, message: "Synthetic secret provider details" },
+        { status, headers: { "retry-after": "120" } },
+      ),
+    );
+    await assert.rejects(
+      send("recipient@example.test", "000000", "reset", delivery()),
+      (e: unknown) => {
+        assert.ok(e instanceof EmailDeliveryError);
+        assert.equal(e.retryable, retryable);
+        assert.equal(e.retryAfterSeconds, 120);
+        assert.doesNotMatch(String(e), /secret provider/);
+        return true;
+      },
+    );
+  }
+  for (const transport of [
+    async () => {
+      throw new Error("Private network details");
     },
-  }));
-  const pending = send("recipient@example.test", "000000", "reset");
-  const rejected = assert.rejects(pending, /email timed out/);
+    async () => Response.json({ id: "invalid" }),
+    async () => new Response("x".repeat(9000)),
+  ]) {
+    const send = resendEmailSender(config(), transport);
+    await assert.rejects(
+      send("recipient@example.test", "000000", "reset", delivery()),
+      (e: unknown) => e instanceof EmailDeliveryError && e.retryable,
+    );
+  }
+});
+
+test("Resend aborts a stalled request within fifteen seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let signal: AbortSignal;
+  const send = resendEmailSender(config(), async (_url, options) => {
+    signal = options!.signal!;
+    return new Promise<Response>((_resolve, reject) =>
+      signal.addEventListener("abort", () =>
+        reject(new Error("Private timeout details")),
+      ),
+    );
+  });
+  const pending = send("recipient@example.test", "000000", "reset", delivery());
+  const rejected = assert.rejects(
+    pending,
+    (e: unknown) => e instanceof EmailDeliveryError && e.retryable,
+  );
   t.mock.timers.tick(15000);
   await rejected;
-  assert.ok(closes > 0);
+  assert.equal(signal!.aborted, true);
 });

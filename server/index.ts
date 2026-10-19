@@ -21,7 +21,8 @@ const html = await readFile(
   new URL("../dist/web/index.html", import.meta.url),
   "utf8",
 );
-const { app, close } = createApp(db, config, html);
+const { app, close, emailAuth } = createApp(db, config, html);
+emailAuth.delivery?.start();
 const closeResources = async () => {
   try {
     await close();

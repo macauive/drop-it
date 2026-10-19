@@ -96,8 +96,8 @@ test("HTTPS proxy preserves legacy and email auth, host-only cookies, CSRF, MCP 
     emailAuth: {
       secret: password(),
       from: "sender@example.test",
-      username: password(),
-      password: password(),
+      apiKey: "re_" + password(),
+      deliveryKey: randomBytes(32).toString("hex"),
     },
   };
   const mail: { code: string; purpose: string }[] = [];
@@ -143,11 +143,15 @@ test("HTTPS proxy preserves legacy and email auth, host-only cookies, CSRF, MCP 
           res.on("data", (chunk) => parts.push(Buffer.from(chunk)));
           res.on("end", () => {
             const value = Buffer.concat(parts).toString();
-            resolve({
-              status: res.statusCode!,
-              headers: res.headers,
-              body: value ? JSON.parse(value) : {},
-            });
+            void built.emailAuth.delivery!.processPending().then(
+              () =>
+                resolve({
+                  status: res.statusCode!,
+                  headers: res.headers,
+                  body: value ? JSON.parse(value) : {},
+                }),
+              reject,
+            );
           });
         },
       );

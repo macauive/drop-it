@@ -355,4 +355,30 @@ export async function migrate(db: Database) {
     )`);
     await tx.query("INSERT INTO schema_migrations(version) VALUES(11)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=12"))
+        .rows.length
+    )
+      return;
+    await tx.query(`CREATE TABLE email_outbox (
+      id uuid PRIMARY KEY,
+      owner uuid REFERENCES users(id) ON DELETE CASCADE,
+      challenge_hash text UNIQUE REFERENCES email_challenges(hash) ON DELETE CASCADE,
+      payload text,
+      status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','failed')),
+      attempts integer NOT NULL DEFAULT 0 CHECK(attempts>=0),
+      next_attempt_at timestamptz NOT NULL DEFAULT now(),
+      locked_until timestamptz, lease_token uuid,
+      provider_id text, failure_code text,
+      created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL,
+      CHECK((status='pending')=(payload IS NOT NULL)),
+      CHECK((locked_until IS NULL)=(lease_token IS NULL)),
+      CHECK(payload IS NULL OR octet_length(payload)<=8192)
+    )`);
+    await tx.query(
+      `CREATE INDEX email_outbox_due ON email_outbox(next_attempt_at,created_at) WHERE status='pending'`,
+    );
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(12)");
+  });
 }

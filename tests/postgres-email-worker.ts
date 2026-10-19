@@ -11,6 +11,7 @@ process.once("message", async (raw) => {
         root: z.string().min(1),
         databaseUrl: z.string().url(),
         secret: z.string().min(32),
+        deliveryKey: z.string().regex(/^[a-f0-9]{64}$/),
         password: z.string().min(15),
       })
       .strict()
@@ -42,8 +43,8 @@ process.once("message", async (raw) => {
       emailAuth: {
         secret: input.secret,
         from: "sender@example.test",
-        username: input.secret,
-        password: input.secret,
+        apiKey: "re_" + input.secret,
+        deliveryKey: input.deliveryKey,
       },
     };
     let code = "";
@@ -57,6 +58,8 @@ process.once("message", async (raw) => {
       "crash@example.test",
       input.password,
     );
+    void emails.delivery!.processPending();
+    while (!code) await new Promise(resolve => setImmediate(resolve));
     process.send?.({ requestId: result.requestId, code });
     setInterval(() => {}, 1000);
   } catch {

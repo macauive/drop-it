@@ -11,6 +11,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { migrate, type Database } from "../server/db.js";
 import { Auth } from "../server/auth.js";
 import { EmailAuth } from "../server/email-auth.js";
+import { EmailDelivery } from "../server/email-delivery.js";
 import type { Config } from "../server/config.js";
 import { postgresFixture } from "./postgres-fixture.js";
 import { Library, digest } from "../server/library.js";
@@ -35,8 +36,8 @@ const config: Config = {
   emailAuth: {
     secret: pass(),
     from: "sender@example.test",
-    username: pass(),
-    password: pass(),
+    apiKey: "re_" + pass(),
+    deliveryKey: randomBytes(32).toString("hex"),
   },
 };
 let db: Database | undefined, peer: Database | undefined;
@@ -56,6 +57,14 @@ try {
     eb = new EmailAuth(peer, b, config, async (_email, code) => {
       mailB.push(code);
     });
+  for (const emails of [ea, eb]) {
+    const request = emails.request.bind(emails);
+    emails.request = async (...args: Parameters<EmailAuth["request"]>) => {
+      const result = await request(...args);
+      await emails.delivery!.processPending();
+      return result;
+    };
+  }
   const password = pass(),
     c = await ea.request("signup", "concurrent@example.test", password),
     code = mailA.at(-1)!;
@@ -146,6 +155,63 @@ try {
       restartPass,
     ),
   );
+  // Prove that two PostgreSQL pools skip a leased job while its provider is stalled.
+  const queueDb = await fixture.create("delivery"),
+    queuePeer = await fixture.connect("delivery");
+  await migrate(queueDb);
+  const queueAuth = new Auth(queueDb, config),
+    queueEmails = new EmailAuth(queueDb, queueAuth, config, async () => {});
+  await queueEmails.request("signup", "first-job@example.test", pass());
+  await queueEmails.request("signup", "second-job@example.test", pass());
+  let release!: () => void, started!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const submitted: string[] = [];
+  const firstWorker = new EmailDelivery(
+    queueDb,
+    config.emailAuth!,
+    async (_email, _code, _purpose, delivery) => {
+      submitted.push(delivery.id);
+      started();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return randomUUID();
+    },
+  );
+  const secondWorker = new EmailDelivery(
+    queuePeer,
+    config.emailAuth!,
+    async (_email, _code, _purpose, delivery) => {
+      submitted.push(delivery.id);
+      return randomUUID();
+    },
+  );
+  const busy = firstWorker.processPending();
+  await firstStarted;
+  await secondWorker.processPending();
+  assert.equal(submitted.length, 2);
+  assert.equal(new Set(submitted).size, 2);
+  const closing = firstWorker.close();
+  release();
+  await busy;
+  await closing;
+  assert.equal(
+    (
+      await queueDb.query(
+        "SELECT id FROM email_outbox WHERE status='accepted' AND payload IS NULL",
+      )
+    ).rows.length,
+    2,
+  );
+  await secondWorker.close();
+  await queueEmails.close();
+  await queuePeer.close();
+  await queueDb.close();
+  console.log(
+    "PASS: two pools lease different durable jobs, skip in-flight sends and drain safely",
+  );
   await ea.close();
   await eb.close();
   await peer.close();
@@ -220,6 +286,7 @@ try {
       root,
       databaseUrl: fixture.url("auth"),
       secret: config.emailAuth!.secret,
+      deliveryKey: config.emailAuth!.deliveryKey,
       password: crashPassword,
     });
     const [result] = (await message) as [{ requestId: string; code: string }];
@@ -245,29 +312,22 @@ try {
       ).rows.length,
       1,
     );
+    // Expire only the killed worker's lease, as the production worker does after 60s.
     await db.query(
-      "UPDATE email_request_limits SET last_at=now()-interval '2 minutes'",
+      "UPDATE email_outbox SET locked_until=now()-interval '1 second' WHERE challenge_hash=$1",
+      [digest(result.requestId)],
     );
-    const replacement = await postCrashEmails.request(
-      "signup",
-      "crash@example.test",
-      crashPassword,
-    );
-    await assert.rejects(
-      postCrashEmails.verify(
-        "signup",
-        { requestId: result.requestId, code: result.code },
-        crashPassword,
-      ),
-    );
+    await postCrashEmails.delivery!.processPending();
+    assert.equal(postCrashMail.length, 1);
+    assert.equal(postCrashMail[0], result.code);
     await postCrashEmails.verify(
       "signup",
-      { requestId: replacement.requestId, code: postCrashMail.at(-1)! },
+      { requestId: result.requestId, code: postCrashMail[0] },
       crashPassword,
     );
     await postCrashEmails.close();
     console.log(
-      "PASS: killing a process during SMTP delivery preserves the database and resend recovers safely",
+      "PASS: SIGKILL during delivery recovers the original encrypted email and code without a new request",
     );
   } finally {
     worker.kill("SIGKILL");
@@ -318,11 +378,13 @@ try {
       pass(),
     ],
   );
-  await source.query("DROP TABLE email_challenges,email_request_limits");
+  await source.query(
+    "DROP TABLE email_outbox,email_challenges,email_request_limits",
+  );
   await source.query(
     "ALTER TABLE users DROP COLUMN email,DROP COLUMN email_verified_at",
   );
-  await source.query("DELETE FROM schema_migrations WHERE version=11");
+  await source.query("DELETE FROM schema_migrations WHERE version IN (11,12)");
   const tables = [
     "users",
     "sessions",
@@ -419,6 +481,7 @@ try {
       "rollback-email@example.test",
       emailPassword,
     );
+  await restoredEmails.delivery!.processPending();
   await restoredEmails.verify(
     "signup",
     { requestId: emailSignup.requestId, code: rollbackMail.at(-1)! },

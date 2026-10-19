@@ -6,8 +6,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { openDatabase, migrate } from "../server/db.js";
+import { openDatabase, migrate, type Database } from "../server/db.js";
 import { createApp } from "../server/app.js";
+import { Auth } from "../server/auth.js";
+import {
+  EmailDelivery,
+  EmailDeliveryError,
+  enqueueEmail,
+  resendEmailSender,
+} from "../server/email-delivery.js";
 import { EmailAuth, type EmailSender } from "../server/email-auth.js";
 import type { Config } from "../server/config.js";
 import { digest } from "../server/library.js";
@@ -37,8 +44,8 @@ async function setup() {
     emailAuth: {
       secret: password(),
       from: "sender@example.test",
-      username: password(),
-      password: password(),
+      apiKey: "re_" + password(),
+      deliveryKey: randomBytes(32).toString("hex"),
     },
   };
   const sent: { email: string; code: string; purpose: string }[] = [];
@@ -53,6 +60,15 @@ async function setup() {
     fetch,
     sender,
   );
+  // Explicitly drain synthetic jobs; production starts the polling worker in index.ts.
+  const requestEmail = built.emailAuth.request.bind(built.emailAuth);
+  built.emailAuth.request = async (
+    ...args: Parameters<EmailAuth["request"]>
+  ) => {
+    const result = await requestEmail(...args);
+    await built.emailAuth.delivery?.processPending();
+    return result;
+  };
   server.on("request", built.app);
   const request = (path: string, body?: unknown, cookie = "", site = origin) =>
     fetch(origin + path, {
@@ -297,11 +313,13 @@ test("migration and verified email linking retain legacy account IDs, libraries,
       tables.map((table) => f.db.query(`SELECT * FROM ${table}`)),
     );
     // Recreate exactly the v10 boundary with synthetic data only.
-    await f.db.query("DROP TABLE email_challenges,email_request_limits");
+    await f.db.query(
+      "DROP TABLE email_outbox,email_challenges,email_request_limits",
+    );
     await f.db.query(
       "ALTER TABLE users DROP COLUMN email,DROP COLUMN email_verified_at",
     );
-    await f.db.query("DELETE FROM schema_migrations WHERE version=11");
+    await f.db.query("DELETE FROM schema_migrations WHERE version IN (11,12)");
     await migrate(f.db);
     await migrate(f.db);
     const after = await Promise.all(
@@ -423,6 +441,7 @@ test("email requests use generic responses and durable per-email/service throttl
     const service = new EmailAuth(f.db, f.auth, f.config, f.sender);
     await f.cooldown();
     const first = await service.request("reset", a.email);
+    await service.delivery!.processPending();
     assert.equal(f.sent.length, sent + 1);
     const second = await service.request("reset", a.email);
     assert.notEqual(first.requestId, second.requestId);
@@ -590,7 +609,7 @@ test("concurrent verification grants once and password changes invalidate pendin
     );
   }));
 
-test("failed asynchronous delivery clears only its challenge and never logs email/code/provider errors", () =>
+test("permanent delivery failure retains a failed job without logging private provider details", () =>
   fixture(async (f) => {
     const logs: unknown[][] = [];
     const original = console.error;
@@ -598,7 +617,7 @@ test("failed asynchronous delivery clears only its challenge and never logs emai
       logs.push(args);
     };
     const failing = new EmailAuth(f.db, f.auth, f.config, async () => {
-      throw new Error("Synthetic private provider details");
+      throw new EmailDeliveryError(false);
     });
     try {
       const c = await failing.request(
@@ -607,6 +626,7 @@ test("failed asynchronous delivery clears only its challenge and never logs emai
         password(),
       );
       assert.equal(c.ok, true);
+      await failing.delivery!.processPending();
       await failing.close();
       assert.equal(
         (
@@ -614,7 +634,16 @@ test("failed asynchronous delivery clears only its challenge and never logs emai
             digest(c.requestId),
           ])
         ).rows.length,
-        0,
+        1,
+      );
+      assert.equal(
+        (
+          await f.db.query<{ status: string }>(
+            "SELECT status FROM email_outbox WHERE challenge_hash=$1",
+            [digest(c.requestId)],
+          )
+        ).rows[0].status,
+        "failed",
       );
       const logged = JSON.stringify(logs);
       assert.doesNotMatch(logged, /failure@example|private provider/);
@@ -673,15 +702,13 @@ test("email reset, settings password change and offline recovery notify only aft
       account.pass,
       next,
     );
+    await f.emailAuth.delivery!.processPending();
     await f.emailAuth.close();
     assert.equal(count(), 1);
     assert.equal(f.sent.at(-1)!.email, account.email);
     assert.equal(f.sent.at(-1)!.code, "");
     // New app instance after shutdown models a normal process restart.
     const emails = new EmailAuth(f.db, f.auth, f.config, f.sender);
-    f.auth.setPasswordChangedNotifier((email) =>
-      emails.notifyPasswordChanged(email),
-    );
     const session = await f.auth.login(next, undefined, account.email);
     const recovery = await f.auth.createRecoveryCode(
       account.owner,
@@ -690,17 +717,21 @@ test("email reset, settings password change and offline recovery notify only aft
     );
     const recovered = password();
     await f.auth.recover(recovery.recoveryCode, recovered);
+    await emails.delivery!.processPending();
     assert.equal(count(), 2);
     await assert.rejects(f.auth.recover(recovery.recoveryCode, password()));
+    await emails.delivery!.processPending();
     assert.equal(count(), 2);
     await f.cooldown();
-    const reset = await emails.request("reset", account.email),
-      code = f.code();
+    const reset = await emails.request("reset", account.email);
+    await emails.delivery!.processPending();
+    const code = f.code();
     await emails.verify(
       "reset",
       { requestId: reset.requestId, code },
       password(),
     );
+    await emails.delivery!.processPending();
     await emails.close();
     assert.equal(count(), 3);
     assert.ok(await f.auth.sessionOwner(other.session));
@@ -749,9 +780,6 @@ test("confirmation delivery failure cannot roll back a committed password or exp
     const emails = new EmailAuth(f.db, f.auth, f.config, async () => {
       throw new Error("Synthetic secret transport detail");
     });
-    f.auth.setPasswordChangedNotifier((email) =>
-      emails.notifyPasswordChanged(email),
-    );
     try {
       await f.auth.changePassword(
         account.owner,
@@ -759,6 +787,7 @@ test("confirmation delivery failure cannot roll back a committed password or exp
         account.pass,
         next,
       );
+      await emails.delivery!.processPending();
       await emails.close();
       assert.equal(await f.auth.sessionOwner(account.session), undefined);
       assert.ok(
@@ -774,87 +803,362 @@ test("confirmation delivery failure cannot roll back a committed password or exp
         "secret transport",
       ])
         assert.equal(serialized.includes(privateValue), false);
-      assert.match(serialized, /EMAIL_DELIVERY_FAILED/);
+      assert.match(serialized, /EMAIL_DELIVERY_RETRY/);
     } finally {
       console.error = old;
     }
   }));
 
-test("resend invalidates the old code and a late delivery failure cannot delete its replacement", () =>
-  fixture(async (f) => {
-    let rejectFirst!: (error: Error) => void;
-    const sent: { code: string }[] = [];
-    const emails = new EmailAuth(
-      f.db,
-      f.auth,
-      f.config,
-      async (_email, code) => {
-        sent.push({ code });
-        if (sent.length === 1)
-          await new Promise<void>((_, reject) => {
-            rejectFirst = reject;
-          });
+async function queueFixture(
+  run: (f: {
+    db: Database;
+    config: Config;
+    auth: Auth;
+    emails: EmailAuth;
+    sent: { email: string; code: string; purpose: string; id: string }[];
+  }) => Promise<void>,
+) {
+  const dataDir = await mkdtemp(join(tmpdir(), "drop-it-outbox-"));
+  const db = await openDatabase({ dataDir });
+  const config: Config = {
+    port: 4317,
+    origin: "http://127.0.0.1:4317",
+    local: true,
+    production: false,
+    dataDir,
+    databaseUrl: undefined,
+    ai: undefined,
+    redirectUris: [],
+    publicAccounts: true,
+    signupEnabled: true,
+    emailAuth: {
+      secret: password(),
+      from: "sender@example.test",
+      apiKey: "re_" + password(),
+      deliveryKey: randomBytes(32).toString("hex"),
+    },
+  };
+  await migrate(db);
+  const sent: { email: string; code: string; purpose: string; id: string }[] =
+    [];
+  const auth = new Auth(db, config);
+  const sender: EmailSender = async (email, code, purpose, delivery) => {
+    sent.push({ email, code, purpose, id: delivery.id });
+    return randomUUID();
+  };
+  const emails = new EmailAuth(db, auth, config, sender);
+  try {
+    await run({ db, config, auth, emails, sent });
+  } finally {
+    await emails.close();
+    await db.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+}
+const due = (db: Database) =>
+  db.query(
+    "UPDATE email_outbox SET next_attempt_at=now()-interval '1 second',locked_until=NULL,lease_token=NULL WHERE status='pending'",
+  );
+
+test("challenge and encrypted job commit together; a fresh worker delivers without requesting another code", () =>
+  queueFixture(async ({ db, config, auth, emails, sent }) => {
+    const pass = password(),
+      request = await emails.request("signup", "restart@example.test", pass);
+    assert.equal(sent.length, 0);
+    const job = (
+      await db.query<{ id: string; payload: string; challenge_hash: string }>(
+        "SELECT * FROM email_outbox",
+      )
+    ).rows[0];
+    assert.equal(job.challenge_hash, digest(request.requestId));
+    assert.doesNotMatch(job.payload, /restart@example|code|password/);
+    assert.equal(job.payload.includes(pass), false);
+    await emails.close();
+    const restarted = new EmailAuth(
+      db,
+      auth,
+      config,
+      async (email, code, purpose, delivery) => {
+        sent.push({ email, code, purpose, id: delivery.id });
+        return randomUUID();
       },
     );
-    const pass = password(),
-      first = await emails.request("signup", "resend@example.test", pass),
-      oldCode = sent[0].code;
-    await f.cooldown();
-    const second = await emails.request("signup", "resend@example.test", pass),
-      newCode = sent[1].code;
-    await assert.rejects(
-      emails.verify(
-        "signup",
-        { requestId: first.requestId, code: oldCode },
-        pass,
-      ),
-    );
-    const old = console.error;
-    console.error = () => {};
-    try {
-      rejectFirst(new Error("Synthetic delayed failure"));
-      await new Promise((resolve) => setImmediate(resolve));
-    } finally {
-      console.error = old;
-    }
-    assert.equal(
-      (
-        await f.db.query("SELECT hash FROM email_challenges WHERE hash=$1", [
-          digest(second.requestId),
-        ])
-      ).rows.length,
-      1,
-    );
-    await emails.verify(
+    await restarted.delivery!.processPending();
+    assert.equal(sent.length, 1);
+    const stored = (
+      await db.query<{ payload: null; status: string; provider_id: string }>(
+        "SELECT * FROM email_outbox",
+      )
+    ).rows[0];
+    assert.equal(stored.status, "accepted");
+    assert.equal(stored.payload, null);
+    assert.ok(stored.provider_id);
+    await restarted.verify(
       "signup",
-      { requestId: second.requestId, code: newCode },
+      { requestId: request.requestId, code: sent[0].code },
       pass,
     );
-    await emails.close();
+    assert.equal(
+      (await db.query("SELECT id FROM email_outbox")).rows.length,
+      0,
+    );
+    await restarted.close();
   }));
 
-test("delivery saturation is bounded and graceful shutdown drains sends and rejects new requests", () =>
-  fixture(async (f) => {
-    const releases: (() => void)[] = [];
-    const emails = new EmailAuth(f.db, f.auth, f.config, async () => {
-      await new Promise<void>((resolve) => releases.push(resolve));
+test("database rollback prevents both challenges and jobs, and prevents password rotation without its notification", () =>
+  queueFixture(async ({ db, config, auth, emails }) => {
+    await db.query(
+      `CREATE FUNCTION reject_mail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Synthetic queue failure'; END $$`,
+    );
+    await db.query(
+      "CREATE TRIGGER reject_mail BEFORE INSERT ON email_outbox FOR EACH ROW EXECUTE FUNCTION reject_mail()",
+    );
+    await assert.rejects(
+      emails.request("signup", "rollback@example.test", password()),
+    );
+    assert.equal(
+      (await db.query("SELECT hash FROM email_challenges")).rows.length,
+      0,
+    );
+    const pass = password(),
+      session = await auth.setup(pass),
+      owner = (await auth.sessionOwner(session))!;
+    await db.query(
+      "UPDATE users SET email=$1,email_verified_at=now() WHERE id=$2",
+      ["rollback@example.test", owner],
+    );
+    await assert.rejects(auth.changePassword(owner, session, pass, password()));
+    assert.equal(await auth.sessionOwner(session), owner);
+    assert.ok(await auth.login(pass, undefined, "rollback@example.test"));
+    assert.equal(
+      (await db.query("SELECT id FROM email_outbox")).rows.length,
+      0,
+    );
+    assert.ok(config.emailAuth);
+  }));
+
+test("transient failures retry the same immutable message and key, permanent failures erase private payloads", () =>
+  queueFixture(async ({ db, config, emails }) => {
+    await emails.request("signup", "retry@example.test", password());
+    const calls: string[] = [];
+    let attempts = 0;
+    const send = resendEmailSender(config.emailAuth!, async (_url, options) => {
+      calls.push(
+        new Headers(options!.headers).get("idempotency-key")! +
+          String(options!.body),
+      );
+      if (++attempts === 1)
+        return Response.json(
+          { name: "rate_limit_exceeded" },
+          { status: 429, headers: { "retry-after": "120" } },
+        );
+      return Response.json({ id: randomUUID() });
     });
-    await Promise.all(
-      Array.from({ length: 8 }, (_, i) =>
-        emails.request("signup", `saturation-${i}@example.test`, password()),
+    const worker = new EmailDelivery(db, config.emailAuth!, send);
+    await worker.processPending();
+    assert.equal(
+      (
+        await db.query<{ delayed: boolean }>(
+          "SELECT next_attempt_at>now()+interval '119 seconds' AS delayed FROM email_outbox",
+        )
+      ).rows[0].delayed,
+      true,
+    );
+    await worker.processPending();
+    assert.equal(attempts, 1);
+    config.emailAuth!.from = "changed@example.test";
+    await due(db);
+    await worker.processPending();
+    assert.equal(calls[0], calls[1]);
+    await emails.request("signup", "permanent@example.test", password());
+    const rejected = new EmailDelivery(db, config.emailAuth!, async () => {
+      throw new EmailDeliveryError(false);
+    });
+    await rejected.processPending();
+    const job = (
+      await db.query<{ status: string; payload: null }>(
+        "SELECT * FROM email_outbox WHERE status='failed'",
+      )
+    ).rows[0];
+    assert.equal(job.status, "failed");
+    assert.equal(job.payload, null);
+    await rejected.close();
+    await worker.close();
+  }));
+
+test("crash after provider acceptance reuses the same idempotency key after lease expiry", () =>
+  queueFixture(async ({ db, config, emails }) => {
+    await emails.request("signup", "accepted@example.test", password());
+    let failAck = true;
+    const faultDb: Database = {
+      ...db,
+      query: async (sql, params) => {
+        if (failAck && sql.includes("status='accepted'")) {
+          failAck = false;
+          throw new Error("Synthetic lost acknowledgement");
+        }
+        return db.query(sql, params);
+      },
+    };
+    const keys: string[] = [],
+      providerAccepted = new Set<string>();
+    const sender: EmailSender = async (_email, _code, _purpose, delivery) => {
+      keys.push(delivery.id);
+      providerAccepted.add(delivery.id);
+      return randomUUID();
+    };
+    const crashed = new EmailDelivery(faultDb, config.emailAuth!, sender);
+    await assert.rejects(crashed.processPending());
+    assert.equal(
+      (await db.query<{ status: string }>("SELECT status FROM email_outbox"))
+        .rows[0].status,
+      "pending",
+    );
+    await crashed.close();
+    const restarted = new EmailDelivery(db, config.emailAuth!, sender);
+    await restarted.processPending();
+    assert.equal(keys.length, 1);
+    await due(db);
+    await restarted.processPending();
+    assert.equal(keys.length, 2);
+    assert.equal(keys[0], keys[1]);
+    assert.equal(providerAccepted.size, 1);
+    await restarted.close();
+  }));
+
+test("replacement, verification, revocation, deletion and expiry cancel stale email jobs", () =>
+  queueFixture(async ({ db, auth, emails, sent }) => {
+    const pass = password();
+    await emails.request("signup", "replace@example.test", pass);
+    const oldJob = (
+      await db.query<{ id: string }>("SELECT id FROM email_outbox")
+    ).rows[0].id;
+    await db.query(
+      "UPDATE email_request_limits SET last_at=now()-interval '2 minutes'",
+    );
+    const replacement = await emails.request(
+      "signup",
+      "replace@example.test",
+      pass,
+    );
+    assert.equal(
+      (await db.query("SELECT id FROM email_outbox WHERE id=$1", [oldJob])).rows
+        .length,
+      0,
+    );
+    await emails.delivery!.processPending();
+    await emails.verify(
+      "signup",
+      { requestId: replacement.requestId, code: sent[0].code },
+      pass,
+    );
+    const session = await auth.login(pass, undefined, "replace@example.test"),
+      owner = (await auth.sessionOwner(session))!;
+    await db.query(
+      "UPDATE email_request_limits SET last_at=now()-interval '2 minutes'",
+    );
+    await emails.request("reset", "replace@example.test");
+    await auth.logoutEverywhere(owner, session, pass);
+    assert.equal(
+      (await db.query("SELECT id FROM email_outbox")).rows.length,
+      0,
+    );
+    await emails.request("signup", "expired@example.test", password());
+    await db.query(
+      "UPDATE email_outbox SET expires_at=now()-interval '1 second'",
+    );
+    await emails.delivery!.processPending();
+    assert.equal(sent.length, 1);
+    assert.equal(
+      (await db.query<{ payload: null }>("SELECT payload FROM email_outbox"))
+        .rows[0].payload,
+      null,
+    );
+    const nextSession = await auth.login(
+      pass,
+      undefined,
+      "replace@example.test",
+    );
+    await auth.changePassword(owner, nextSession, pass, password());
+    assert.equal(
+      (await db.query("SELECT id FROM email_outbox WHERE owner=$1", [owner]))
+        .rows.length,
+      1,
+    );
+    await db.query("DELETE FROM users WHERE id=$1", [owner]);
+    assert.equal(
+      (await db.query("SELECT id FROM email_outbox WHERE owner=$1", [owner]))
+        .rows.length,
+      0,
+    );
+  }));
+
+test("ciphertext tampering and retry exhaustion stop safely, and shutdown leaves unclaimed work durable", () =>
+  queueFixture(async ({ db, config, emails }) => {
+    await emails.request("signup", "tamper@example.test", password());
+    const worker = new EmailDelivery(db, config.emailAuth!, async () => {
+      throw new Error("Should not send");
+    });
+    await db.query("UPDATE email_outbox SET payload=$1", [
+      randomBytes(100).toString("base64"),
+    ]);
+    await worker.processPending();
+    assert.equal(
+      (
+        await db.query<{ failure_code: string }>(
+          "SELECT failure_code FROM email_outbox",
+        )
+      ).rows[0].failure_code,
+      "invalid_payload",
+    );
+    await emails.request("signup", "exhausted@example.test", password());
+    await db.query(
+      "UPDATE email_outbox SET attempts=19 WHERE status='pending'",
+    );
+    const retrying = new EmailDelivery(db, config.emailAuth!, async () => {
+      throw new EmailDeliveryError(true);
+    });
+    await retrying.processPending();
+    assert.equal(
+      (await db.query("SELECT id FROM email_outbox WHERE status='pending'"))
+        .rows.length,
+      0,
+    );
+    await emails.request("signup", "shutdown@example.test", password());
+    await worker.close();
+    await worker.processPending();
+    assert.equal(
+      (await db.query("SELECT id FROM email_outbox WHERE status='pending'"))
+        .rows.length,
+      1,
+    );
+    await assert.rejects(
+      db.transaction((tx) =>
+        enqueueEmail(tx, config.emailAuth!, "bad", "123456", "reset", null),
       ),
     );
-    assert.equal(releases.length, 4);
-    let closed = false;
-    const closing = emails.close().then(() => {
-      closed = true;
-    });
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(closed, false);
-    await assert.rejects(
-      emails.request("signup", "after-close@example.test", password()),
+    await retrying.close();
+  }));
+
+test("exhausted verification attempts cancel an email that has not been submitted", () =>
+  queueFixture(async ({ db, emails, sent }) => {
+    const request = await emails.request(
+      "signup",
+      "attempts@example.test",
+      password(),
     );
-    releases.forEach((release) => release());
-    await closing;
-    assert.equal(closed, true);
+    for (let attempt = 0; attempt < 3; attempt++)
+      await assert.rejects(
+        emails.verify(
+          "signup",
+          { requestId: request.requestId, code: "000000" },
+          password(),
+        ),
+      );
+    assert.equal(
+      (await db.query("SELECT id FROM email_outbox")).rows.length,
+      0,
+    );
+    await emails.delivery!.processPending();
+    assert.equal(sent.length, 0);
   }));

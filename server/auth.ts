@@ -1,3 +1,4 @@
+import { enqueueEmail } from "./email-delivery.js";
 import {
   randomBytes,
   randomUUID,
@@ -151,19 +152,20 @@ export async function verifyPassword(password: string, encoded: string) {
 }
 
 export class Auth implements OAuthServerProvider {
-  private passwordChangedNotifier?: (email: string) => void;
-  setPasswordChangedNotifier(notify: (email: string) => void) {
-    this.passwordChangedNotifier = notify;
-  }
-  private passwordChanged(email: string | null) {
-    if (!email) return;
-    try {
-      this.passwordChangedNotifier?.(email);
-    } catch {
-      console.error("Password-change notification failed", {
-        code: "EMAIL_NOTIFICATION_FAILED",
-      });
-    }
+  private async passwordChanged(
+    tx: Queryable,
+    owner: string,
+    email: string | null,
+  ) {
+    if (email && this.config.emailAuth)
+      await enqueueEmail(
+        tx,
+        this.config.emailAuth,
+        email,
+        "",
+        "password-changed",
+        owner,
+      );
   }
   constructor(
     readonly db: Database,
@@ -444,6 +446,7 @@ export class Auth implements OAuthServerProvider {
       owner,
     ]);
     await this.invalidateCredentials(tx, owner, true);
+    await this.passwordChanged(tx, owner, email);
     return true;
   }
   async security(owner: string, token: string) {
@@ -494,21 +497,21 @@ export class Auth implements OAuthServerProvider {
     newPasswordSchema.parse(newPassword);
     const snapshot = await this.reauthenticate(owner, token, currentPassword);
     const hash = await hashPassword(newPassword);
-    const email = await this.db.transaction(async (tx) => {
+    await this.db.transaction(async (tx) => {
       await this.recheck(tx, snapshot, token);
       await tx.query("UPDATE users SET password_hash=$1 WHERE id=$2", [
         hash,
         owner,
       ]);
       await this.invalidateCredentials(tx, owner, true);
-      return (
+      const email = (
         await tx.query<{ email: string | null }>(
           "SELECT email FROM users WHERE id=$1",
           [owner],
         )
       ).rows[0].email;
+      await this.passwordChanged(tx, owner, email);
     });
-    this.passwordChanged(email);
   }
   async createRecoveryCode(
     owner: string,
@@ -543,7 +546,7 @@ export class Auth implements OAuthServerProvider {
       );
     if (!snapshot) throw rejected();
     const hash = await hashPassword(newPassword);
-    const email = await this.db.transaction(async (tx) => {
+    await this.db.transaction(async (tx) => {
       const current = await this.lockOwner(tx, snapshot.id);
       if (
         !current ||
@@ -556,14 +559,14 @@ export class Auth implements OAuthServerProvider {
         snapshot.id,
       ]);
       await this.invalidateCredentials(tx, snapshot.id, true);
-      return (
+      const email = (
         await tx.query<{ email: string | null }>(
           "SELECT email FROM users WHERE id=$1",
           [snapshot.id],
         )
       ).rows[0].email;
+      await this.passwordChanged(tx, snapshot.id, email);
     });
-    this.passwordChanged(email);
   }
   async deleteAccount(owner: string, token: string, password: string) {
     const snapshot = await this.reauthenticate(owner, token, password);
