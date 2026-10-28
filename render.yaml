@@ -23,7 +23,7 @@ services:
       - key: PUBLIC_SUPPORT_EMAIL
         value: info@macdigital.ai
       - key: PUBLIC_PUBLISHER_NAME
-        value: Mac Digital AI
+        value: Mac Digital
       - key: BACKUP_RETENTION_DAYS
         value: "7"
       - key: DATABASE_URL

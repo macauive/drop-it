@@ -149,7 +149,7 @@ try {
             publication: {
               countries: settings.countries,
               release_notes:
-                "Add capture, library research and library organization skills.",
+                "Add capture, library research and library organization skills, refresh the app icon, and update the developer name to Mac Digital. Improve compatibility with current ChatGPT file delivery.",
             },
           },
         },

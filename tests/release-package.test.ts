@@ -62,6 +62,12 @@ test("release packaging includes only public manifest, MCP config, icon and the 
     assert.equal(manifest.interface.developerName, "Synthetic publisher");
     assert.equal(manifest.version, "0.1.1");
     assert.equal(manifest.skills, "./skills/");
+    assert.equal(manifest.interface.logo, "./assets/icon.svg");
+    assert.equal(manifest.interface.composerIcon, "./assets/icon.svg");
+    assert.deepEqual(
+      execFileSync("unzip", ["-p", zip, "assets/icon.svg"]),
+      await readFile(new URL("../release/icon.svg", import.meta.url)),
+    );
     for (const path of skillFiles) {
       const packaged = execFileSync("unzip", ["-p", zip, path], {
         encoding: "utf8",
