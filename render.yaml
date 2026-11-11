@@ -7,7 +7,7 @@ services:
     region: ohio
     plan: 0.5c-512mb
     numInstances: 1
-    autoDeployTrigger: off
+    autoDeployTrigger: "off"
     buildCommand: npm ci --include=dev && npm run build
     startCommand: node --import tsx server/index.ts
     healthCheckPath: /ready
@@ -49,7 +49,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OAUTH_REDIRECT_URIS
-        value: https://chatgpt.com/connector/oauth/yoxjmeygvTeh
+        value: https://chatgpt.com/connector/oauth/yoxjmeygvTeh,https://aiaflcebjdegligolapfpgdplbofplbo.chromiumapp.org/drop-it
 databases:
   - name: drop-it-db
     region: ohio
