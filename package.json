@@ -11,6 +11,7 @@
     "start": "tsx server/index.ts",
     "build:web": "vite build",
     "build": "npm run typecheck && npm run build:web",
+    "build:extension": "node scripts/build-extension.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "tsx --test --test-concurrency=1 tests/*.test.ts",

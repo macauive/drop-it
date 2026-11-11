@@ -8,6 +8,10 @@ export default ts.config(
   ...ts.configs.recommended,
   { languageOptions: { globals: { ...globals.node, ...globals.browser } } },
   {
+    files: ["extension/**/*.js"],
+    languageOptions: { globals: { chrome: "readonly" } },
+  },
+  {
     files: ["web/**/*.{ts,tsx}"],
     plugins: { "react-hooks": hooks },
     rules: hooks.configs.recommended.rules,

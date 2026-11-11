@@ -26,6 +26,7 @@ import type { Database, Queryable } from "./db.js";
 import type { Config } from "./config.js";
 import { digest } from "./library.js";
 import { AppError } from "./errors.js";
+import { extensionOrigin } from "../shared/extension.js";
 import {
   currentPasswordSchema,
   newPasswordSchema,
@@ -81,7 +82,8 @@ async function derivePassword(password: string, salt: string, legacy = false) {
 }
 const secret = () => randomBytes(32).toString("base64url");
 const sessionTokenPattern = /^[A-Za-z0-9_-]{43}$/;
-const scopesAllowed = ["library:read", "library:write"];
+const defaultScopes = ["library:read", "library:write"];
+const scopesAllowed = [...defaultScopes, "capture:write"];
 type UserRow = {
   id: string;
   password_hash: string;
@@ -628,9 +630,19 @@ export class Auth implements OAuthServerProvider {
       throw new InvalidTargetError(
         "The resource must match this MCP endpoint.",
       );
-    const scopes = params.scopes?.length ? params.scopes : scopesAllowed;
+    const scopes = params.scopes?.length ? params.scopes : defaultScopes;
     if (scopes.some((scope) => !scopesAllowed.includes(scope)))
       throw new InvalidScopeError("Unsupported scope.");
+    if (
+      scopes.includes("capture:write") &&
+      (client.redirect_uris.length !== 1 ||
+        !extensionOrigin(client.redirect_uris[0]) ||
+        !this.config.redirectUris.includes(client.redirect_uris[0]) ||
+        scopes.length !== 1)
+    )
+      throw new InvalidScopeError(
+        "Capture access requires a configured extension client and no other scopes.",
+      );
     const id = secret();
     await this.db.query(
       "INSERT INTO oauth_pending(id,client_id,params,expires_at) VALUES($1,$2,$3,now()+interval '10 minutes')",
@@ -654,7 +666,7 @@ export class Auth implements OAuthServerProvider {
       throw new AppError(
         410,
         "EXPIRED",
-        "This connection request expired. Start again from ChatGPT.",
+        "This connection request expired. Start again from your connected app.",
       );
     const client = await this.clientsStore.getClient(rows[0].client_id);
     return {

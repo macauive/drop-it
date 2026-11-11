@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Drop into Drop It</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <img src="icons/48.png" alt="" width="36" height="36" />
+        <div>
+          <strong>Drop It</strong><span>Save ideas. Find them later.</span>
+        </div>
+      </div>
+      <button id="library" class="quiet" type="button">Library ↗</button>
+    </header>
+    <main>
+      <div class="eyebrow" id="kind">BROWSER CAPTURE</div>
+      <h1 id="heading">Keep this for later.</h1>
+      <p class="intro" id="intro">
+        Review your capture, then drop it into your library.
+      </p>
+      <div id="message" role="status" aria-live="polite" hidden></div>
+      <div class="capture-actions">
+        <button id="new-capture" class="quiet" type="button">
+          New capture
+        </button>
+        <button id="discard" class="quiet" type="button" hidden>
+          Discard draft
+        </button>
+      </div>
+      <section
+        id="discard-confirm"
+        class="connection"
+        role="group"
+        aria-labelledby="discard-heading"
+        hidden
+      >
+        <strong id="discard-heading">Discard this draft?</strong>
+        <p id="discard-copy"></p>
+        <div class="row">
+          <button id="keep-editing" type="button">Keep editing</button
+          ><button id="confirm-discard" type="button">Discard draft</button>
+        </div>
+      </section>
+      <section id="connection" class="connection" hidden>
+        <div>
+          <strong id="connection-heading">Connect your library</strong>
+          <p id="connection-copy">
+            Sign in to the same Drop It account you use on the web or in
+            ChatGPT.
+          </p>
+        </div>
+        <button id="connect" type="button">Connect Drop It</button>
+        <button id="retry-connection" class="quiet" type="button" hidden>
+          Check connection again
+        </button>
+        <small
+          >The sign-in window may close this popup. Reopen Drop It to continue
+          your capture.</small
+        >
+      </section>
+      <form id="capture" hidden>
+        <label for="title">Title</label
+        ><input id="title" name="title" maxlength="200" required />
+        <label for="url">Source link</label
+        ><input id="url" name="url" type="url" maxlength="2048" required />
+        <div id="text-field" hidden>
+          <label for="text">Selected text</label
+          ><textarea
+            id="text"
+            name="text"
+            maxlength="50000"
+            rows="5"
+          ></textarea>
+        </div>
+        <div class="row">
+          <div>
+            <label for="category">Pool</label
+            ><input
+              id="category"
+              name="category"
+              maxlength="120"
+              placeholder="Uncategorized"
+              list="pool-options"
+            />
+            <datalist id="pool-options"></datalist>
+          </div>
+          <div>
+            <label for="tags">Tags <span class="optional">optional</span></label
+            ><input
+              id="tags"
+              name="tags"
+              maxlength="500"
+              placeholder="ideas, reading"
+              list="tag-options"
+              aria-describedby="tag-help"
+            />
+            <datalist id="tag-options"></datalist>
+          </div>
+        </div>
+        <p id="tag-help" class="field-help">
+          Separate tags with commas. Suggestions come from your library.
+        </p>
+        <label for="notes">Notes <span class="optional">optional</span></label
+        ><textarea
+          id="notes"
+          name="notes"
+          maxlength="8000"
+          rows="2"
+          placeholder="What caught your attention?"
+        ></textarea>
+        <input id="summary" name="summary" type="hidden" value="" />
+        <section id="duplicates" hidden>
+          <strong>Already in your library</strong>
+          <div id="duplicate-links"></div>
+          <label class="check"
+            ><input type="checkbox" id="allow-duplicate" />Save another drop
+            from this source</label
+          >
+        </section>
+        <p class="privacy">
+          Only this link and the text you choose are sent when you save. Page
+          contents are never fetched automatically.
+        </p>
+        <button id="save" class="primary" type="submit" disabled>
+          Save drop
+        </button>
+      </form>
+      <section id="success" hidden>
+        <div class="success-mark" aria-hidden="true">✓</div>
+        <h2>Safely dropped.</h2>
+        <p id="saved-title"></p>
+        <button id="open-drop" class="primary" type="button">
+          Open in Drop It ↗</button
+        ><button id="again" class="quiet" type="button">
+          Capture current page
+        </button>
+      </section>
+      <footer>
+        <span id="account-status" role="status">Checking connection…</span
+        ><button id="disconnect" class="quiet" type="button" hidden>
+          Disconnect
+        </button>
+      </footer>
+      <p id="connection-help" class="field-help">
+        Reconnect after restarting Chrome. Disconnect clears local drafts.
+      </p>
+      <p class="field-help" id="shortcut-info" hidden></p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

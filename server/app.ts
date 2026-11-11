@@ -41,6 +41,7 @@ import sharp from "sharp";
 import { appIconSvg } from "./public-brand.js";
 import { thumbnail } from "./thumbnails.js";
 import { stageLegacyExport } from "./export-file.js";
+import { addExtensionRoutes } from "./extension.js";
 
 const appIconPng: Partial<Record<192 | 512, Promise<Buffer>>> = {};
 function pngAppIcon(size: 192 | 512) {
@@ -151,10 +152,11 @@ export function createApp(
       provider: auth,
       issuerUrl: new URL(config.origin),
       resourceServerUrl: new URL(auth.resource),
-      scopesSupported: ["library:read", "library:write"],
+      scopesSupported: ["library:read", "library:write", "capture:write"],
       resourceName: "Drop It",
     }),
   );
+  addExtensionRoutes(app, auth, library, config);
   app.use(
     "/api",
     rateLimit({

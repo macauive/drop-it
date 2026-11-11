@@ -628,7 +628,9 @@ function Consent({ id }: { id: string }) {
                 <li key={scope}>
                   {scope === "library:read"
                     ? "Read your saved items and sources"
-                    : "Save, edit, and delete library items"}
+                    : scope === "capture:write"
+                      ? "Save pages, selected text, and links; suggest your pools and tags"
+                      : "Save, edit, and delete library items"}
                 </li>
               ))}
             </ul>
