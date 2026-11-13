@@ -48,6 +48,10 @@ function fixture() {
       201,
     );
   };
+  let draftHandler = async (_init: RequestInit) => {
+    void _init;
+    return response({});
+  };
   const tokens = () => ({
     access_token: randomBytes(32).toString("base64url"),
     refresh_token: randomBytes(32).toString("base64url"),
@@ -141,6 +145,7 @@ function fixture() {
     assert.equal(init.redirect, "error");
     const path = new URL(url).pathname;
     calls.push({ path, init });
+    if (path === "/extension/v1/draft") return draftHandler(init);
     if (path === "/register") {
       const registration = JSON.parse(String(init.body));
       assert.deepEqual(registration.redirect_uris, [redirect]);
@@ -217,6 +222,9 @@ function fixture() {
     },
     setCapture(handler: typeof captureHandler) {
       captureHandler = handler;
+    },
+    setDraft(handler: typeof draftHandler) {
+      draftHandler = handler;
     },
     values(draft: Record<string, unknown>) {
       return Object.fromEntries(keys.map((key) => [key, draft[key]]));
@@ -1122,4 +1130,109 @@ test("invalid or unavailable suggestions never poison the cache or prevent manua
       })
     ).saved.id,
   );
+});
+
+test("page suggestions preserve concurrent edits, original selection, cancellation and account binding", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  f.selection("Exact selected text");
+  const draft = await f.controller.handle({ type: "capture" });
+  let release: (value: Response) => void = () => {};
+  let started: () => void = () => {};
+  let begin = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  f.setDraft(async () => {
+    started();
+    return new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+  });
+  const result = () =>
+    response({
+      accountId: f.account().id,
+      draft: {
+        title: "AI title",
+        summary: "AI summary",
+        category: "Reading",
+        tags: ["article"],
+      },
+      retrieval: {
+        id: randomUUID(),
+        snapshot: {
+          requestedUrl: draft.url,
+          finalUrl: draft.url.split("#")[0],
+          text: "Fetched text",
+          capturedAt: new Date().toISOString(),
+          provider: "firecrawl",
+          title: "Article",
+          description: "",
+          truncated: false,
+        },
+      },
+    });
+  const before = await f.controller.handle({
+    type: "update",
+    id: draft.id,
+    values: { ...f.values(draft), tags: "my-tag" },
+  });
+  const pending = f.controller.handle({ type: "retrieve", id: draft.id });
+  await begin;
+  await f.controller.handle({
+    type: "update",
+    id: draft.id,
+    values: {
+      ...f.values(before),
+      title: "My edited title",
+      notes: "Personal note",
+    },
+  });
+  release(result());
+  const retrieved = await pending;
+  assert.equal(retrieved.title, "My edited title");
+  assert.equal(retrieved.summary, "AI summary");
+  assert.equal(
+    retrieved.tags,
+    "my-tag",
+    "Manual edits made before retrieval also win over suggestions",
+  );
+  assert.equal(retrieved.text, "Exact selected text");
+  assert.equal(retrieved.notes, "Personal note");
+  assert.ok(retrieved.retrieval);
+  const payload = savePayload(retrieved, f.values(retrieved));
+  assert.equal(payload.source.originalText, "Exact selected text");
+  assert.equal(payload.source.url, draft.url);
+  assert.equal(payload.source.retrievalId, retrieved.retrieval.id);
+  begin = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const canceled = f.controller.handle({ type: "retrieve", id: draft.id });
+  await begin;
+  await f.controller.handle({
+    type: "cancel-retrieval",
+    id: draft.id,
+    remove: true,
+  });
+  release(result());
+  assert.equal((await canceled).retrieval, undefined);
+  begin = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const stale = f.controller.handle({ type: "retrieve", id: draft.id });
+  await begin;
+  await f.controller.handle({
+    type: "update",
+    id: draft.id,
+    values: { ...f.values(retrieved), url: "https://example.org/new" },
+  });
+  release(result());
+  assert.equal((await stale).retrieval, undefined);
+  begin = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const disconnected = f.controller.handle({ type: "retrieve", id: draft.id });
+  await begin;
+  await f.controller.handle({ type: "disconnect" });
+  release(result());
+  await assert.rejects(disconnected);
 });

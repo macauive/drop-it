@@ -183,7 +183,7 @@ export function createMcpServer(
   tool(
     "draft_drop",
     "Draft a drop with AI",
-    "Create an editable draft from text, a link, or an owned image/PDF/text file using OpenAI. Does not save an item. Review the draft including sourceUrl before save_drop, and pass an accepted sourceUrl as source.url. URLs are never fetched. Transcription is inferred, not the immutable original. Never infer a website URL from a brand or logo alone.",
+    "Create an editable draft from text, a link, or an owned image/PDF/text file using OpenAI. Does not save an item. Review the draft including sourceUrl before save_drop, and pass an accepted sourceUrl as source.url. Only when fetchPage=true, retrieve a public article/documentation URL via Firecrawl before drafting. Explain the external retrieval to the user first. Save an accepted retrieval.id as source.retrievalId with the unchanged supplied URL. Files are never sent to Firecrawl. Retrieval failures return a notice and leave manual capture available. Transcription is inferred, not the immutable original. Never infer a website URL from a brand or logo alone.",
     draftSchema,
     true,
     false,

@@ -2,7 +2,7 @@ import type {
   SearchInput,
   SearchResult,
   SaveInput,
-  DraftResult,
+  CaptureDraftResult,
 } from "../shared/schema.js";
 import { fileMime } from "../shared/files.js";
 import { downloadOriginal } from "./download.js";
@@ -112,10 +112,14 @@ export const client = {
   },
   draft: (
     source: NonNullable<SaveInput["source"]>,
-  ): Promise<{ draft: DraftResult }> =>
+    fetchPage = false,
+  ): Promise<CaptureDraftResult> =>
     embedded
-      ? call("draft_drop", { source })
-      : api("/api/draft", "POST", { source }),
+      ? call("draft_drop", { source, ...(fetchPage ? { fetchPage } : {}) })
+      : api("/api/draft", "POST", {
+          source,
+          ...(fetchPage ? { fetchPage } : {}),
+        }),
   search: (input: SearchInput): Promise<SearchResult> =>
     embedded ? call("search_drops", input) : api("/api/search", "POST", input),
   get: (id: string): Promise<Detail> =>

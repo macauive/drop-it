@@ -17,6 +17,23 @@ let sourceTabId =
     : undefined;
 let lastEdit = "",
   editError = false;
+let retrieving = false,
+  retrievalGeneration = 0;
+function renderRetrieval() {
+  $("retrieve").textContent = retrieving
+    ? "Cancel retrieval"
+    : "Retrieve page & suggest fields";
+  $("retrieve").disabled =
+    busy || !draft || Boolean(draft.attempt) || Boolean(confirming);
+  $("page-snapshot").hidden = !draft?.retrieval;
+  $("retrieval-notice").textContent = draft?.retrievalNotice || "";
+  $("retrieval-notice").hidden = !draft?.retrievalNotice;
+  $("page-text").textContent = draft?.retrieval?.snapshot.text || "";
+  const page = draft?.retrieval?.snapshot;
+  $("page-provenance").textContent = page
+    ? `Retrieved ${page.capturedAt} via Firecrawl from ${page.finalUrl}${page.truncated ? " · Bounded excerpt" : ""}. Saved separately from selected text and the AI summary.`
+    : "";
+}
 function notice(text = "") {
   $("message").textContent = text;
   $("message").hidden = !text;
@@ -51,6 +68,8 @@ function clearSuggestions() {
   $("tag-options").replaceChildren();
 }
 function clearDraft() {
+  retrievalGeneration++;
+  retrieving = false;
   draft = undefined;
   lastEdit = "";
   editError = false;
@@ -66,6 +85,7 @@ function clearDraft() {
   controls();
 }
 function controls() {
+  renderRetrieval();
   for (const element of document.body.children)
     if (element.id !== "discard-confirm" && element.tagName !== "SCRIPT")
       element.inert = Boolean(confirming);
@@ -123,6 +143,8 @@ function controls() {
     busy || Boolean(draft?.attempt) || Boolean(confirming);
 }
 function showDraft(next) {
+  retrievalGeneration++;
+  retrieving = false;
   draft = next;
   currentId = next.id;
   if (Number.isInteger(next.tabId)) sourceTabId = next.tabId;
@@ -425,6 +447,10 @@ function persistDraft() {
   if (!draft || draft.saved || draft.attempt || busy || confirming) return;
   const edited = values(),
     id = draft.id;
+  if (draft.retrieval && edited.url !== draft.retrieval.snapshot.requestedUrl) {
+    draft.retrieval = undefined;
+    renderRetrieval();
+  }
   const snapshot = JSON.stringify([id, edited]);
   if (snapshot === lastEdit) return;
   lastEdit = snapshot;
@@ -453,6 +479,63 @@ function persistDraft() {
   void writing.catch(() => {});
   suggestTags();
 }
+$("retrieve").addEventListener("click", async () => {
+  if (!draft || busy || confirming) return;
+  const id = draft.id;
+  const generation = ++retrievalGeneration;
+  if (retrieving) {
+    retrieving = false;
+    controls();
+    await call("cancel-retrieval", { id }).catch((error) =>
+      notice(error.message),
+    );
+    return;
+  }
+  persistDraft();
+  const before = values();
+  retrieving = true;
+  controls();
+  try {
+    await writing;
+    if (generation !== retrievalGeneration || draft?.id !== id) return;
+    const next = await call("retrieve", { id });
+    if (
+      generation !== retrievalGeneration ||
+      draft?.id !== id ||
+      !identity.connected
+    )
+      return;
+    // Preserve popup edits that have not reached the worker yet too.
+    const current = values();
+    draft = next;
+    if (current.url === before.url && current.text === before.text) {
+      for (const key of ["title", "summary", "category", "tags"])
+        if (current[key] === before[key]) $(key).value = next[key];
+      lastEdit = "";
+      persistDraft();
+    } else {
+      draft = { ...next, ...current, retrieval: undefined };
+    }
+    renderRetrieval();
+  } catch (error) {
+    if (generation === retrievalGeneration) notice(error.message);
+  } finally {
+    if (generation === retrievalGeneration) {
+      retrieving = false;
+      controls();
+    }
+  }
+});
+$("remove-snapshot").addEventListener("click", async () => {
+  if (!draft) return;
+  retrievalGeneration++;
+  retrieving = false;
+  draft.retrieval = undefined;
+  controls();
+  await call("cancel-retrieval", { id: draft.id, remove: true }).catch(
+    (error) => notice(error.message),
+  );
+});
 for (const key of keys) {
   // Listen at the field itself: some hosts do not bubble textarea edits.
   for (const name of ["input", "change", "blur"])
@@ -466,6 +549,8 @@ document.addEventListener("visibilitychange", () => {
 $("capture").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!draft || busy || !identity.connected || confirming) return;
+  retrievalGeneration++;
+  retrieving = false;
   const edited = values(),
     id = draft.id;
   busy = true;

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { categorySchema, idSchema, urlSchema } from "./schema.js";
+import { pageSnapshotSchema } from "./page.js";
 
 // The archive is data only. No account identity, credentials, or executable paths.
 export const archiveFormat = "drop-it";
@@ -39,6 +40,7 @@ export const portableSourceSchema = z
     url: z.union([urlSchema, z.literal("")]),
     createdAt: portableDate,
     attachmentId: idSchema.nullable(),
+    pageSnapshot: pageSnapshotSchema.nullable().optional(),
   })
   .strict();
 export const portableFileSchema = z

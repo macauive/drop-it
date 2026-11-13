@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Drop It",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Save pages, selected text, and links to your private Drop It library.",
   "minimum_chrome_version": "120",
   "permissions": [

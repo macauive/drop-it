@@ -396,3 +396,11 @@ details[open] summary {
     --tint: #142234;
   }
 }
+
+#page-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow-y: auto;
+  font: inherit;
+}

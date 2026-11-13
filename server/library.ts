@@ -15,7 +15,10 @@ import {
   type Item,
   type Source,
   type SearchResult,
+  type CaptureDraftResult,
 } from "../shared/schema.js";
+import { pageSnapshotSchema, type PageSnapshot } from "../shared/page.js";
+import { publicPageUrl, type PageExtractor } from "./page-extraction.js";
 import { AppError } from "./errors.js";
 import type { AIProvider } from "./ai.js";
 import { semanticRank, type SearchDocument } from "./semantic.js";
@@ -74,7 +77,7 @@ type ExportSourceRow = Pick<
 };
 const searchSelection = selection.replace(
   "  FROM items",
-  ', COALESCE(i.reviewed_transcription,s.original_text) AS "matchText" FROM items',
+  `, concat_ws(' ',COALESCE(i.reviewed_transcription,s.original_text),s.page_snapshot->>'text') AS "matchText" FROM items`,
 );
 function withEvidence(item: SearchItem, query: string): Item {
   const { matchText, ...result } = item;
@@ -109,6 +112,7 @@ export class Library {
     private readonly resolveAI?: (
       owner: string,
     ) => Promise<AIProvider | undefined>,
+    private readonly pageExtractor?: PageExtractor,
   ) {
     this.limits = { ...defaultLibraryLimits, ...limits };
     for (const value of Object.values(this.limits))
@@ -164,7 +168,7 @@ export class Library {
       (SELECT count(*) FROM items WHERE owner=$1) AS drops,
       COALESCE((SELECT sum(octet_length(title)+octet_length(summary)+octet_length(category)
         +octet_length(array_to_string(tags,''))+octet_length(notes)+COALESCE(octet_length(reviewed_transcription),0)) FROM items WHERE owner=$1),0)
-      +COALESCE((SELECT sum(octet_length(original_text)+octet_length(url)) FROM sources WHERE owner=$1),0)
+      +COALESCE((SELECT sum(octet_length(original_text)+octet_length(url)+COALESCE(octet_length(page_snapshot::text),0)) FROM sources WHERE owner=$1),0)
       +COALESCE((SELECT sum(octet_length(original_text)) FROM attachments WHERE owner=$1),0) AS text,
       COALESCE(sum(octet_length(a.bytes)),0) AS attachments,
       COALESCE(sum(octet_length(a.bytes)) FILTER(WHERE state.active),0) AS active,
@@ -204,7 +208,7 @@ export class Library {
       (SELECT count(*) FROM items WHERE owner=$1) AS drops,
       COALESCE((SELECT sum(octet_length(title)+octet_length(summary)+octet_length(category)
         +octet_length(array_to_string(tags,''))+octet_length(notes)+COALESCE(octet_length(reviewed_transcription),0)) FROM items WHERE owner=$1),0)
-      +COALESCE((SELECT sum(octet_length(original_text)+octet_length(url)) FROM sources WHERE owner=$1),0)
+      +COALESCE((SELECT sum(octet_length(original_text)+octet_length(url)+COALESCE(octet_length(page_snapshot::text),0)) FROM sources WHERE owner=$1),0)
       +COALESCE((SELECT sum(octet_length(original_text)) FROM attachments WHERE owner=$1),0) AS text,
       COALESCE((SELECT sum(octet_length(bytes)) FROM attachments WHERE owner=$1),0) AS attachments`,
       [owner],
@@ -305,72 +309,211 @@ export class Library {
       this.serviceAI.busy--;
     }
   }
-  async draft(owner: string, input: unknown) {
-    const { source } = draftSchema.parse(input);
-    return this.withAI(owner, async (ai) => {
-      let image: string | undefined;
-      let pdf: { filename: string; data: string } | undefined;
-      let fileText = "";
-      if (source.attachmentId) {
-        const { rows } = await this.db.transaction(async (tx) => {
-          await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [
-            owner,
-          ]);
-          return tx.query<{
-            bytes: Uint8Array;
-            mime: string;
-            filename: string;
-            original_text: string;
-          }>(
-            `SELECT a.bytes,a.mime,a.filename,a.original_text FROM attachments a WHERE a.owner=$1 AND a.id=$2 AND ${eligibleAttachment} FOR UPDATE OF a`,
-            [owner, source.attachmentId],
-          );
-        });
-        if (!rows[0])
-          throw new AppError(404, "NOT_FOUND", "Attachment unavailable.");
-        if (isImageMime(rows[0].mime)) {
-          const preview = await sharp(Buffer.from(rows[0].bytes), {
-            limitInputPixels: 25_000_000,
-          })
-            .rotate()
-            .resize({
-              width: 1536,
-              height: 1536,
-              fit: "inside",
-              withoutEnlargement: true,
-            })
-            .jpeg({ quality: 85 })
-            .toBuffer();
-          image = `data:image/jpeg;base64,${preview.toString("base64")}`;
-        } else if (rows[0].mime === "application/pdf") {
-          pdf = {
-            filename: rows[0].filename,
-            data: `data:application/pdf;base64,${Buffer.from(rows[0].bytes).toString("base64")}`,
-          };
-        } else fileText = rows[0].original_text;
+  async draft(owner: string, input: unknown): Promise<CaptureDraftResult> {
+    const { source, fetchPage } = draftSchema.parse(input);
+    let retrieval: CaptureDraftResult["retrieval"];
+    let retrievalNotice: string | undefined;
+    if (fetchPage) {
+      if (!source.url || source.attachmentId || source.retrievalId)
+        throw new AppError(
+          400,
+          "PAGE_INPUT",
+          "Retrieve a public link without a file attached.",
+        );
+      try {
+        retrieval = await this.retrievePage(owner, source.url);
+      } catch (error) {
+        if (!(error instanceof AppError)) throw error;
+        retrievalNotice = error.message;
       }
-      const { rows } = await this.db.query<{ category: string }>(
-        "SELECT category FROM items WHERE owner=$1 AND (trashed_at IS NULL OR trashed_at>clock_timestamp()-interval '7 days') GROUP BY category ORDER BY count(*) DESC,category LIMIT 100",
-        [owner],
-      );
-      const url = source.url ? new URL(source.url) : null;
-      const draft = draftResultSchema.parse(
-        await ai.draft({
-          text: (source.originalText || fileText).slice(0, 16000),
-          url: url ? `${url.origin}${url.pathname}` : "",
-          categories: rows.map((row) => categorySchema.parse(row.category)),
-          image,
-          pdf,
-        }),
-      );
-      draft.category = await this.canonicalCategory(
-        owner,
-        draft.category,
-        this.db,
-      );
-      if (source.url) draft.sourceUrl = source.url;
-      return { draft };
+    } else if (source.retrievalId) {
+      retrieval = {
+        id: source.retrievalId,
+        snapshot: await this.pageForSave(owner, source, this.db),
+      };
+    }
+    const fallbackDraft = () => ({
+      title: retrieval?.snapshot.title || new URL(source.url).hostname,
+      summary: "",
+      category: "Uncategorized",
+      tags: [],
+      extractedText: "",
+      sourceUrl: source.url,
     });
+    // Do not send a rejected/private URL or failed retrieval to another provider.
+    if (retrievalNotice) return { draft: fallbackDraft(), retrievalNotice };
+    try {
+      const result = await this.withAI(owner, async (ai) => {
+        let image: string | undefined;
+        let pdf: { filename: string; data: string } | undefined;
+        let fileText = "";
+        if (source.attachmentId) {
+          const { rows } = await this.db.transaction(async (tx) => {
+            await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [
+              owner,
+            ]);
+            return tx.query<{
+              bytes: Uint8Array;
+              mime: string;
+              filename: string;
+              original_text: string;
+            }>(
+              `SELECT a.bytes,a.mime,a.filename,a.original_text FROM attachments a WHERE a.owner=$1 AND a.id=$2 AND ${eligibleAttachment} FOR UPDATE OF a`,
+              [owner, source.attachmentId],
+            );
+          });
+          if (!rows[0])
+            throw new AppError(404, "NOT_FOUND", "Attachment unavailable.");
+          if (isImageMime(rows[0].mime)) {
+            const preview = await sharp(Buffer.from(rows[0].bytes), {
+              limitInputPixels: 25_000_000,
+            })
+              .rotate()
+              .resize({
+                width: 1536,
+                height: 1536,
+                fit: "inside",
+                withoutEnlargement: true,
+              })
+              .jpeg({ quality: 85 })
+              .toBuffer();
+            image = `data:image/jpeg;base64,${preview.toString("base64")}`;
+          } else if (rows[0].mime === "application/pdf") {
+            pdf = {
+              filename: rows[0].filename,
+              data: `data:application/pdf;base64,${Buffer.from(rows[0].bytes).toString("base64")}`,
+            };
+          } else fileText = rows[0].original_text;
+        }
+        const { rows } = await this.db.query<{ category: string }>(
+          "SELECT category FROM items WHERE owner=$1 AND (trashed_at IS NULL OR trashed_at>clock_timestamp()-interval '7 days') GROUP BY category ORDER BY count(*) DESC,category LIMIT 100",
+          [owner],
+        );
+        const url = source.url ? new URL(source.url) : null;
+        const draft = draftResultSchema.parse(
+          await ai.draft({
+            text: (source.originalText || fileText).slice(0, 16000),
+            url: url ? `${url.origin}${url.pathname}` : "",
+            categories: rows.map((row) => categorySchema.parse(row.category)),
+            image,
+            pdf,
+            page: retrieval?.snapshot,
+          }),
+        );
+        draft.category = await this.canonicalCategory(
+          owner,
+          draft.category,
+          this.db,
+        );
+        if (source.url) draft.sourceUrl = source.url;
+        return { draft };
+      });
+      return {
+        ...result,
+        ...(retrieval ? { retrieval } : {}),
+        ...(retrievalNotice ? { retrievalNotice } : {}),
+      };
+    } catch (error) {
+      if (
+        !fetchPage ||
+        !(error instanceof AppError) ||
+        !error.code.startsWith("AI_")
+      )
+        throw error;
+      // A successful extraction is useful even when drafting is unavailable.
+      return {
+        draft: fallbackDraft(),
+        ...(retrieval ? { retrieval } : {}),
+        ...(retrievalNotice ? { retrievalNotice } : {}),
+        draftNotice: error.message,
+      };
+    }
+  }
+  private pageBusy = new Set<string>();
+  private async retrievePage(owner: string, url: string) {
+    publicPageUrl(url);
+    if (!this.pageExtractor)
+      throw new AppError(
+        503,
+        "PAGE_UNAVAILABLE",
+        "Page retrieval is not configured. Keep the link or enter details manually.",
+      );
+    if (this.pageBusy.has(owner) || this.pageBusy.size >= 2)
+      throw new AppError(
+        429,
+        "PAGE_LIMIT",
+        "Page retrieval is busy. Try later or save manually.",
+      );
+    this.pageBusy.add(owner);
+    const id = randomUUID();
+    try {
+      await this.db.transaction(async (tx) => {
+        // Serialize admission across owners and processes; do not hold while fetching.
+        await tx.query("SELECT pg_advisory_xact_lock(431713)");
+        const { rows } = await tx.query<{
+          minute: string;
+          day: string;
+          service_minute: string;
+          service_day: string;
+        }>(
+          `SELECT
+          count(*) FILTER (WHERE owner=$1 AND created_at>clock_timestamp()-interval '1 minute') AS minute,
+          count(*) FILTER (WHERE owner=$1) AS day,
+          count(*) FILTER (WHERE created_at>clock_timestamp()-interval '1 minute') AS service_minute,
+          count(*) AS service_day FROM page_captures WHERE created_at>clock_timestamp()-interval '24 hours'`,
+          [owner],
+        );
+        const r = rows[0];
+        if (
+          +r.minute >= 5 ||
+          +r.day >= 30 ||
+          +r.service_minute >= 30 ||
+          +r.service_day >= 300
+        )
+          throw new AppError(
+            429,
+            "PAGE_LIMIT",
+            "Page retrieval has reached its usage limit. Try later or save manually.",
+          );
+        await tx.query(
+          "INSERT INTO page_captures(id,owner,url) VALUES($1,$2,$3)",
+          [id, owner, url],
+        );
+      });
+      const snapshot = pageSnapshotSchema.parse(
+        await this.pageExtractor.extract(url),
+      );
+      if (snapshot.requestedUrl !== url)
+        throw new AppError(
+          502,
+          "PAGE_FAILED",
+          "Page retrieval could not complete. Save manually or retry.",
+        );
+      await this.db.query(
+        "UPDATE page_captures SET snapshot=$3 WHERE owner=$1 AND id=$2",
+        [owner, id, JSON.stringify(snapshot)],
+      );
+      return { id, snapshot };
+    } finally {
+      this.pageBusy.delete(owner);
+    }
+  }
+  private async pageForSave(
+    owner: string,
+    source: { url: string; retrievalId?: string; attachmentId?: string },
+    tx: Queryable,
+  ): Promise<PageSnapshot> {
+    const { rows } = await tx.query<{ snapshot: unknown }>(
+      "SELECT snapshot FROM page_captures WHERE owner=$1 AND id=$2 AND url=$3 AND snapshot IS NOT NULL AND created_at>clock_timestamp()-interval '24 hours'",
+      [owner, source.retrievalId, source.url],
+    );
+    if (source.attachmentId || !rows[0])
+      throw new AppError(
+        400,
+        "PAGE_EXPIRED",
+        "The page snapshot expired or its link changed. Retrieve it again or save without it.",
+      );
+    return pageSnapshotSchema.parse(rows[0].snapshot);
   }
   private async canonicalCategory(
     owner: string,
@@ -429,7 +572,7 @@ export class Library {
     if (!rows[0])
       throw new AppError(404, "NOT_FOUND", "This item is no longer available.");
     const result = await tx.query<Source & { attachmentId: string | null }>(
-      `SELECT s.id, s.original_text AS "originalText", s.url, s.created_at AS "createdAt", s.attachment_id AS "attachmentId", s.attachment_id IS NOT NULL AS "hasFile", COALESCE(a.mime IN ('image/png','image/jpeg','image/webp'),false) AS "hasImage", a.filename,a.mime FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner WHERE s.owner=$1 AND s.id=$2`,
+      `SELECT s.id, s.original_text AS "originalText", s.page_snapshot AS "pageSnapshot", s.url, s.created_at AS "createdAt", s.attachment_id AS "attachmentId", s.attachment_id IS NOT NULL AS "hasFile", COALESCE(a.mime IN ('image/png','image/jpeg','image/webp'),false) AS "hasImage", a.filename,a.mime FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner WHERE s.owner=$1 AND s.id=$2`,
       [owner, rows[0].sourceId],
     );
     return { item: rows[0], source: result.rows[0] };
@@ -484,7 +627,7 @@ export class Library {
       // Literal substring terms: SQL wildcards from input do not widen the search.
       for (const term of terms) {
         add(
-          `strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,COALESCE(i.reviewed_transcription,s.original_text),s.url)),?)>0`,
+          `strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,concat_ws(' ',COALESCE(i.reviewed_transcription,s.original_text),s.page_snapshot->>'text'),s.url)),?)>0`,
           term,
         );
       }
@@ -519,7 +662,7 @@ export class Library {
         matches("array_to_string(i.tags,' ')"),
         matches("i.summary"),
         matches(
-          "concat_ws(' ',i.notes,COALESCE(i.reviewed_transcription,s.original_text),s.url)",
+          "concat_ws(' ',i.notes,concat_ws(' ',COALESCE(i.reviewed_transcription,s.original_text),s.page_snapshot->>'text'),s.url)",
         ),
         order,
       ].join(",");
@@ -548,9 +691,9 @@ export class Library {
           const result = await this.db.query<
             SearchDocument & { keywordMatch: boolean }
           >(
-            `SELECT i.id,i.revision,i.title,i.summary,i.category,i.tags,i.notes,COALESCE(i.reviewed_transcription,s.original_text) AS "originalText",
+            `SELECT i.id,i.revision,i.title,i.summary,i.category,i.tags,i.notes,concat_ws(' ',COALESCE(i.reviewed_transcription,s.original_text),s.page_snapshot->>'text') AS "originalText",
             NOT EXISTS (SELECT 1 FROM unnest($${params.length + 1}::text[]) AS term
-              WHERE strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,COALESCE(i.reviewed_transcription,s.original_text),s.url)),term)=0) AS "keywordMatch"
+              WHERE strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,concat_ws(' ',COALESCE(i.reviewed_transcription,s.original_text),s.page_snapshot->>'text'),s.url)),term)=0) AS "keywordMatch"
             FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE ${filtered} ORDER BY i.id`,
             [...params, terms],
           );
@@ -705,6 +848,9 @@ export class Library {
           throw new AppError(404, "NOT_FOUND", "Source unavailable.");
       } else {
         const source = data.source!;
+        const snapshot = source.retrievalId
+          ? await this.pageForSave(owner, source, tx)
+          : null;
         let imageDigest = "";
         if (source.attachmentId) {
           const image = await tx.query<{
@@ -745,7 +891,7 @@ export class Library {
           );
         sourceId = randomUUID();
         await tx.query(
-          "INSERT INTO sources(id,owner,original_text,url,attachment_id,fingerprint,normalized_url) VALUES($1,$2,$3,$4,$5,$6,$7)",
+          "INSERT INTO sources(id,owner,original_text,url,attachment_id,fingerprint,normalized_url,page_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
           [
             sourceId,
             owner,
@@ -754,6 +900,7 @@ export class Library {
             source.attachmentId ?? null,
             sourceFingerprint,
             normalizedUrl,
+            snapshot ? JSON.stringify(snapshot) : null,
           ],
         );
       }
@@ -921,7 +1068,7 @@ export class Library {
           )) FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner
           WHERE i.owner=$1 AND (i.trashed_at IS NULL OR i.trashed_at > now()-interval '7 days')),0)
           + COALESCE((SELECT sum(2048::bigint + 6 * (
-            octet_length(s.original_text)::bigint + octet_length(s.url)
+            octet_length(s.original_text)::bigint + octet_length(s.url) + COALESCE(octet_length(s.page_snapshot::text),0)
             + COALESCE(octet_length(a.filename),0) + COALESCE(octet_length(a.mime),0)
           ) + 4 * ((COALESCE(octet_length(a.bytes),0)::bigint + 2) / 3))
           FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner
@@ -973,7 +1120,7 @@ export class Library {
         signal?.throwIfAborted();
         const sources: { rows: ExportSourceRow[] } =
           await tx.query<ExportSourceRow>(
-            `SELECT s.id,s.original_text AS "originalText",s.url,s.created_at AS "createdAt",a.filename,a.mime,
+            `SELECT s.id,s.original_text AS "originalText",s.page_snapshot AS "pageSnapshot",s.url,s.created_at AS "createdAt",a.filename,a.mime,
           a.id AS "attachmentId",octet_length(a.bytes) AS "fileBytes",a.digest AS sha256
           FROM sources s LEFT JOIN attachments a ON a.id=s.attachment_id AND a.owner=s.owner
           WHERE s.owner=$1 AND ($2::uuid IS NULL OR s.id>$2) AND EXISTS(

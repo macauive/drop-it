@@ -12,6 +12,7 @@ export type Config = Omit<
   | "domainChallenge"
   | "libraryLimits"
   | "emailAuth"
+  | "firecrawl"
 > &
   Partial<
     Pick<
@@ -24,6 +25,7 @@ export type Config = Omit<
       | "domainChallenge"
       | "libraryLimits"
       | "emailAuth"
+      | "firecrawl"
     >
   >;
 export function loadConfig() {
@@ -105,6 +107,15 @@ export function loadConfig() {
       "Public signup requires publisher, support and backup retention settings.",
     );
   return {
+    firecrawl: process.env.FIRECRAWL_API_KEY?.trim()
+      ? {
+          apiKey: z
+            .string()
+            .min(10)
+            .max(500)
+            .parse(process.env.FIRECRAWL_API_KEY.trim()),
+        }
+      : undefined,
     emailAuth,
     chatgpt: loadChatGPTConfig(),
     port,

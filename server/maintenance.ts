@@ -31,6 +31,9 @@ export async function cleanupExpired(db: Database) {
   }
   await db.transaction(async (tx) => {
     await tx.query(
+      "DELETE FROM page_captures WHERE created_at < now()-interval '24 hours'",
+    );
+    await tx.query(
       "DELETE FROM email_outbox WHERE expires_at < now()-interval '7 days'",
     );
     await tx.query("DELETE FROM email_challenges WHERE expires_at < now()");

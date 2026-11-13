@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pageSnapshotSchema } from "./page.js";
 
 export const categorySchema = z
   .string()
@@ -153,10 +154,11 @@ export const sourceInputSchema = z
     originalText: z.string().max(50000).default(""),
     url: z.union([urlSchema, z.literal("")]).default(""),
     attachmentId: idSchema.optional(),
+    retrievalId: idSchema.optional(),
   })
   .strict();
 export const draftSchema = z
-  .object({ source: sourceInputSchema })
+  .object({ source: sourceInputSchema, fetchPage: z.boolean().optional() })
   .strict()
   .refine(
     ({ source }) =>
@@ -174,6 +176,18 @@ export const draftResultSchema = z
   })
   .strict();
 export type DraftResult = z.infer<typeof draftResultSchema>;
+export const captureDraftResultSchema = z
+  .object({
+    draft: draftResultSchema,
+    retrieval: z
+      .object({ id: idSchema, snapshot: pageSnapshotSchema })
+      .strict()
+      .optional(),
+    retrievalNotice: z.string().max(1000).optional(),
+    draftNotice: z.string().max(1000).optional(),
+  })
+  .strict();
+export type CaptureDraftResult = z.infer<typeof captureDraftResultSchema>;
 export const saveSchema = fieldsSchema
   .extend({
     requestId: idSchema,
@@ -275,6 +289,7 @@ export type Source = {
   hasFile: boolean;
   filename: string | null;
   mime: string | null;
+  pageSnapshot?: import("./page.js").PageSnapshot | null;
 };
 export type SearchResult = {
   items: Item[];

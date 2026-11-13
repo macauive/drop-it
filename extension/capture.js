@@ -138,7 +138,13 @@ export function savePayload(draft, input, allowDuplicate = false) {
     category,
     tags,
     notes: values.notes.trim(),
-    source: { originalText: values.text, url: webUrl(values.url.trim()) },
+    source: {
+      originalText: values.text,
+      url: webUrl(values.url.trim()),
+      ...(draft.retrieval?.snapshot.requestedUrl === values.url.trim()
+        ? { retrievalId: draft.retrieval.id }
+        : {}),
+    },
     allowDuplicate,
   };
 }
@@ -161,7 +167,9 @@ export async function jsonRequest(origin, path, init = {}, transport = fetch) {
       credentials: "omit",
       redirect: "error",
       cache: "no-store",
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(
+        path === "/extension/v1/draft" ? 55000 : 20000,
+      ),
     });
   } catch {
     throw new CaptureError(
@@ -188,6 +196,8 @@ export async function jsonRequest(origin, path, init = {}, transport = fetch) {
       SCOPE: "Reconnect Drop It to allow saving captures.",
       ACCOUNT_CHANGED:
         "This capture belongs to another Drop It account. Start a new capture.",
+      PAGE_EXPIRED:
+        "The page snapshot expired or its link changed. Retrieve again or save without it.",
     };
     const message =
       response.status === 401
@@ -218,4 +228,25 @@ export async function jsonRequest(origin, path, init = {}, transport = fetch) {
     );
   }
   return data;
+}
+
+// Merge each suggestion only if that field still matches the request's input.
+// Originals, notes and URL are never generated fields.
+export function applyDraftSuggestions(current, before, result) {
+  if (current.url !== before.url || current.text !== before.text)
+    return current;
+  const next = {
+    ...current,
+    retrieval: result.retrieval,
+    retrievalNotice: [result.retrievalNotice, result.draftNotice]
+      .filter(Boolean)
+      .join(" "),
+  };
+  if (!result.retrieval) return next;
+  for (const key of ["title", "summary", "category", "tags"]) {
+    if (!current.editedFields?.includes(key) && current[key] === before[key])
+      next[key] =
+        key === "tags" ? result.draft.tags.join(", ") : result.draft[key];
+  }
+  return next;
 }

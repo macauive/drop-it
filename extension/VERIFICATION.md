@@ -1,5 +1,33 @@
 # Chrome extension verification
 
+## Version 0.2.8 release preparation — November 13, 2026
+
+Version 0.2.8 packages the Firecrawl capture update for the public service. The native evidence below was collected immediately before the version bump; no extension runtime code changed during release preparation. Permissions and the stable OAuth callback are unchanged. Reloading or updating clears browser-session drafts, so finish pending captures first.
+
+## Native installed-extension verification — November 13, 2026
+
+Verified the current unpacked 0.2.7 implementation directly through native app controls in **Brave Browser**, bundle version `157.1.99.55` (build `199.55`), using Chrome's real extension APIs. Stock Google Chrome was not installed. This is native Chromium evidence, separate from the earlier Owl/user-reported checks and the in-app Chrome API adapter.
+
+The user enabled Developer mode. Loaded `dist/native-chrome-test` with the existing extension identity `aiaflcebjdegligolapfpgdplbofplbo`. Its only service host was the disposable loopback backend. The standard public build and ZIP were left pointed at the public service; production and the existing Owl installation were untouched. No extension permissions or OAuth scopes were broadened.
+
+Observed directly:
+
+- A toolbar invocation on a public article captured its real page title and exact URL, including `#native-test`.
+- **Connect Drop It** opened a real native identity/sign-in window. Signed into a newly seeded synthetic account, reviewed capture-only consent, and connected. The identity window closed; reopening the real `chrome-extension://…/popup.html` restored the original draft and showed `@capture-a`.
+- Edited title, tag and personal synthetic note, then retrieved the article through live Firecrawl and generated suggestions through the existing live AI provider. Manual edits remained intact; the snapshot showed its final source URL and capture time. Explicit Save showed **Saved to your library**. Authenticated read-back confirmed exactly one saved drop, original URL fragment, the chosen tag/note and a separate 7,166-character Firecrawl snapshot.
+- Captured a documentation URL with `#native-offline`, added a different title/tag/note, and retrieved its 30,000-character bounded snapshot. Took only this loopback backend offline by closing its listener; other network access was not changed.
+- Saving while the backend was unreachable showed **Connection unavailable** and that the draft was preserved. This outage failed at the pre-save connection check, before the capture POST; it was not a successful-response-loss injection.
+- Closed the popup. The real extension manager showed **service worker (Inactive)**. Reopened the popup on the original source tab while still offline: **Restored your draft** displayed the edited offline-test title.
+- Restarted the same disposable backend on the same origin/database, then used **Check connection again**. The same account connection recovered, retaining the title, exact URL, tag, note and snapshot. Save showed success. Read-back found exactly one offline-test drop, its original fragment, preserved note/tag, and the 30,000-character snapshot. **Open drop** opened that saved item in the native browser's authenticated website.
+
+The initial fixture exited when its final listener closed. Its native mode now holds an explicit keep-alive timer; an additional mocked-provider lifecycle smoke test verified offline refusal, process survival, online readiness recovery and temporary-state removal. The interrupted test above was recovered from its original temporary database, without resetting the owner or OAuth connection.
+
+After verification, disabled only the temporary Brave test extension, stopped its backend, and removed its disposable database/sign-in file. Developer mode was left as the user selected it. Local screenshots under `dist/firecrawl-verification/` include `native-reviewed-draft.png`, `native-offline-restored.png`, `native-worker-inactive.png` and `native-retry-saved.png`; these contain public/synthetic data and are excluded from Git and packages.
+
+Final `npm run check` passed lint, typecheck, web build and **314 tests** with zero failures/skips. `npm run build:extension` passed. The native copy's JavaScript/HTML/CSS/icons matched the standard generated build byte-for-byte; only its generated service configuration and manifest pointed to loopback. The additional fixture lifecycle smoke check passed process survival while offline, restored readiness and disposable-state cleanup.
+
+Remaining release coverage: stock Google Chrome and minimum-version compatibility, store-assigned identity, native context-menu/iframe/OS-shortcut cases, browser restart/update lifecycle, and publication. Successful-response-loss/idempotency remains covered by automated tests and the in-app adapter test; the native offline check above establishes unavailable-service recovery.
+
 ## Version 0.2.7 follow-up — November 12, 2026
 
 `npm run check` passed lint, typecheck, web build, and **303 tests**, with zero failures or skips. `npm run build:extension` passed with the existing extension identity and service origin. No extension permissions or OAuth scopes were added.

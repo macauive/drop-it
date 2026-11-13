@@ -34,6 +34,7 @@ import {
   emailChallengeSchema,
 } from "../shared/schema.js";
 import { OpenAIProvider, type AIProvider } from "./ai.js";
+import { FirecrawlExtractor, type PageExtractor } from "./page-extraction.js";
 import { addPublicPages } from "./public-pages.js";
 import { addPortabilityRoutes } from "./portability.js";
 import { sharedCaptureSchema } from "../shared/capture.js";
@@ -64,6 +65,7 @@ export function createApp(
   ai?: AIProvider,
   chatgptTransport: typeof fetch = fetch,
   emailSender?: EmailSender,
+  pageExtractor?: PageExtractor,
 ) {
   const app = express();
   const auth = new Auth(db, config);
@@ -76,8 +78,15 @@ export function createApp(
   );
   const chatgpt = new ChatGPT(db, auth, config, chatgptTransport);
   const siteAI = ai ?? (config.ai ? new OpenAIProvider(config.ai) : undefined);
-  const library = new Library(db, siteAI, config.libraryLimits, (owner) =>
-    chatgpt.provider(owner, siteAI),
+  const library = new Library(
+    db,
+    siteAI,
+    config.libraryLimits,
+    (owner) => chatgpt.provider(owner, siteAI),
+    pageExtractor ??
+      (config.firecrawl
+        ? new FirecrawlExtractor(config.firecrawl.apiKey)
+        : undefined),
   );
   const cookie = config.local ? "drop_it_session" : "__Host-drop_it_session";
   const cookieOptions = {

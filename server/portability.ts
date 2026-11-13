@@ -74,7 +74,11 @@ const itemBytes = (item: PortableItem) =>
     item.reviewedTranscription,
   ]);
 const sourceBytes = (source: PortableSource) =>
-  textBytes([source.originalText, source.url]);
+  textBytes([
+    source.originalText,
+    source.url,
+    source.pageSnapshot ? JSON.stringify(source.pageSnapshot) : "",
+  ]);
 const alive = (item: PortableItem, now = Date.now()) =>
   !item.trashedAt || Date.parse(item.trashedAt) > now - 7 * day;
 const canonicalBase64 = (value: string, max: number) => {
@@ -651,7 +655,7 @@ export class Portability {
     }>(
       `SELECT (SELECT count(*) FROM items WHERE owner=$1) AS count,
        ((SELECT coalesce(sum(octet_length(title)::bigint+octet_length(summary)+octet_length(category)+octet_length(array_to_string(tags,''))+octet_length(notes)+octet_length(coalesce(reviewed_transcription,''))),0) FROM items WHERE owner=$1)
-       +(SELECT coalesce(sum(octet_length(original_text)::bigint+octet_length(url)),0) FROM sources WHERE owner=$1)
+       +(SELECT coalesce(sum(octet_length(original_text)::bigint+octet_length(url)+COALESCE(octet_length(page_snapshot::text),0)),0) FROM sources WHERE owner=$1)
        +(SELECT coalesce(sum(octet_length(original_text)::bigint),0) FROM attachments WHERE owner=$1)) AS text,
        (SELECT coalesce(sum(octet_length(bytes)::bigint),0) FROM attachments WHERE owner=$1) AS files,
        (SELECT coalesce(sum(octet_length(bytes)::bigint),0) FROM attachments) AS service`,
@@ -875,7 +879,7 @@ export class Portability {
           const id = randomUUID();
           sources.set(source.id, id);
           await tx.query(
-            "INSERT INTO sources(id,owner,original_text,url,normalized_url,attachment_id,fingerprint,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+            "INSERT INTO sources(id,owner,original_text,url,normalized_url,attachment_id,fingerprint,created_at,page_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
             [
               id,
               owner,
@@ -885,6 +889,7 @@ export class Portability {
               source.attachmentId ? files.get(source.attachmentId) : null,
               this.fingerprint(stage, source),
               source.createdAt,
+              source.pageSnapshot ? JSON.stringify(source.pageSnapshot) : null,
             ],
           );
         }
@@ -1011,7 +1016,7 @@ export class Portability {
         after = "00000000-0000-0000-0000-000000000000";
         for (;;) {
           const result = await tx.query<PortableSource>(
-            `SELECT s.id,s.original_text AS "originalText",s.url,s.created_at AS "createdAt",s.attachment_id AS "attachmentId" FROM sources s WHERE s.owner=$1 AND s.id>$2 AND EXISTS(SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id AND ${live}) ORDER BY s.id LIMIT 100`,
+            `SELECT s.id,s.original_text AS "originalText",s.page_snapshot AS "pageSnapshot",s.url,s.created_at AS "createdAt",s.attachment_id AS "attachmentId" FROM sources s WHERE s.owner=$1 AND s.id>$2 AND EXISTS(SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id AND ${live}) ORDER BY s.id LIMIT 100`,
             [owner, after],
           );
           if (!result.rows.length) break;

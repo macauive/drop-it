@@ -69,6 +69,7 @@ export type EmbeddedPresentation =
       kind: "draft";
       source: NonNullable<SaveInput["source"]>;
       draft: DraftResult;
+      retrieval?: import("../shared/schema.js").CaptureDraftResult["retrieval"];
     }
   | { kind: "trashed"; id: string };
 export type EmbeddedState = {
@@ -155,12 +156,15 @@ export function presentationFromResponse(
       input: searchSchema.parse(args),
       result: mcpOutputSchemas.search_drops.parse(data),
     };
-  if (name === "draft_drop")
+  if (name === "draft_drop") {
+    const output = mcpOutputSchemas.draft_drop.parse(data);
     return {
       kind: "draft",
       source: sourceInputSchema.parse(args.source),
-      draft: mcpOutputSchemas.draft_drop.parse(data).draft,
+      draft: output.draft,
+      ...(output.retrieval ? { retrieval: output.retrieval } : {}),
     };
+  }
   if (name === "wipe_drop")
     return { kind: "trashed", id: idSchema.parse(args.id) };
   if (["get_drop", "save_drop", "update_drop", "restore_drop"].includes(name))

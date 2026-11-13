@@ -41,6 +41,37 @@ before(async () => {
       redirectUris: [redirect, otherRedirect, `${origin}/callback`],
     },
     "<!doctype html><title>Extension test</title>",
+    {
+      async draft() {
+        return {
+          title: "Retrieved article",
+          summary: "Factual synthetic summary",
+          category: "Reading",
+          tags: ["docs"],
+          extractedText: "",
+          sourceUrl: "",
+        };
+      },
+      async embed() {
+        return [];
+      },
+    },
+    fetch,
+    undefined,
+    {
+      async extract(url) {
+        return {
+          provider: "firecrawl",
+          requestedUrl: url,
+          finalUrl: url.split("#")[0],
+          capturedAt: new Date().toISOString(),
+          title: "Retrieved article",
+          description: "Synthetic",
+          text: "ParitySnapshotNeedle documentation",
+          truncated: false,
+        };
+      },
+    },
   );
   server.on("request", built.app);
   session = await built.auth.setup(randomBytes(24).toString("base64url"));
@@ -146,6 +177,114 @@ const input = () => ({
     originalText: "",
     url: `https://example.org/${randomUUID()}#reading`,
   },
+});
+
+test("website and capture-only extension share retrieval with owner-bound snapshots and existing authentication boundaries", async () => {
+  const tokens = await connect();
+  const source = {
+    url: `https://example.org/${randomUUID()}#selected`,
+    originalText: "Exact selected original",
+  };
+  const endpoint = (
+    token: string | undefined,
+    body: unknown,
+    requestOrigin = chromeOrigin,
+  ) =>
+    fetch(`${origin}/extension/v1/draft`, {
+      method: "POST",
+      headers: {
+        Origin: requestOrigin,
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  assert.equal(
+    (await endpoint(undefined, { accountId: owner, source })).status,
+    401,
+  );
+  assert.equal(
+    (await endpoint(tokens.access_token, { accountId: other, source })).status,
+    409,
+  );
+  assert.equal(
+    (
+      await endpoint(
+        tokens.access_token,
+        { accountId: owner, source },
+        "https://example.org",
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await endpoint(tokens.access_token, {
+        accountId: owner,
+        source: { ...source, attachmentId: randomUUID() },
+      })
+    ).status,
+    400,
+  );
+  const readonly = await connect(redirect, "library:read");
+  assert.equal(
+    (await endpoint(readonly.access_token, { accountId: owner, source }))
+      .status,
+    403,
+  );
+  const ext = await endpoint(tokens.access_token, { accountId: owner, source });
+  assert.equal(ext.status, 200);
+  const result = await ext.json();
+  assert.ok(result.retrieval);
+  assert.equal(result.draft.summary, "Factual synthetic summary");
+  const website = await fetch(`${origin}/api/draft`, {
+    method: "POST",
+    headers: {
+      Origin: origin,
+      "Content-Type": "application/json",
+      Cookie: `drop_it_session=${session}`,
+    },
+    body: JSON.stringify({ source, fetchPage: true }),
+  });
+  assert.equal(website.status, 200);
+  const web = await website.json();
+  assert.equal(web.retrieval.snapshot.text, result.retrieval.snapshot.text);
+  assert.deepEqual(web.draft, result.draft);
+  const invalidOrigin = await fetch(`${origin}/api/draft`, {
+    method: "POST",
+    headers: {
+      Origin: chromeOrigin,
+      "Content-Type": "application/json",
+      Cookie: `drop_it_session=${session}`,
+    },
+    body: JSON.stringify({ source, fetchPage: true }),
+  });
+  assert.equal(invalidOrigin.status, 403);
+  const payload = {
+    ...input(),
+    title: "My reviewed title",
+    source: { ...source, retrievalId: result.retrieval.id },
+  };
+  const saved = await capture(tokens.access_token, payload);
+  assert.equal(saved.status, 201);
+  const id = (await saved.json()).id;
+  const detail = await built.library.get(owner, id);
+  assert.equal(detail.source.originalText, source.originalText);
+  assert.equal(
+    detail.source.pageSnapshot?.text,
+    result.retrieval.snapshot.text,
+  );
+  const retry = await capture(tokens.access_token, payload);
+  assert.equal((await retry.json()).id, id);
+  await assert.rejects(
+    built.library.save(other, {
+      requestId: randomUUID(),
+      title: "Steal snapshot",
+      source: payload.source,
+    }),
+    { code: "PAGE_EXPIRED" },
+  );
+  await assert.rejects(built.library.get(other, id), { code: "NOT_FOUND" });
 });
 
 test("extension origin allowlist requires the exact Chrome callback shape", () => {

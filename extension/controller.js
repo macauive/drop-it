@@ -5,6 +5,7 @@ import {
   makeManualCapture,
   readValues,
   savePayload,
+  applyDraftSuggestions,
 } from "./capture.js";
 import { createOAuth } from "./oauth.js";
 
@@ -318,7 +319,30 @@ export function createController(api, origin, transport = fetch) {
       case "update": {
         const draft = await get(message.id);
         if (draft.saved || draft.attempt) return draft;
-        return put({ ...draft, ...readValues(message.values) });
+        const values = readValues(message.values);
+        return put({
+          ...draft,
+          ...values,
+          editedFields: [
+            ...new Set([
+              ...(draft.editedFields || []),
+              ...["title", "summary", "category", "tags"].filter(
+                (key) => values[key] !== draft[key],
+              ),
+            ]),
+          ],
+          ...(values.url !== draft.url
+            ? { retrieval: undefined, retrievalToken: undefined }
+            : {}),
+        });
+      }
+      case "cancel-retrieval": {
+        const draft = await get(message.id);
+        return put({
+          ...draft,
+          retrievalToken: undefined,
+          ...(message.remove ? { retrieval: undefined } : {}),
+        });
       }
       case "save": {
         const identity = await verifyConnection();
@@ -401,6 +425,7 @@ export function createController(api, origin, transport = fetch) {
   }
   return {
     handle(message) {
+      if (message?.type === "retrieve") return retrieve(message);
       return serial(async () => {
         await initialize();
         return dispatch(message);
@@ -422,4 +447,74 @@ export function createController(api, origin, transport = fetch) {
       });
     },
   };
+
+  async function retrieve(message) {
+    // Do not block edit/discard/disconnect mutations behind provider latency.
+    const before = await serial(async () => {
+      await initialize();
+      const identity = await verifyConnection();
+      const draft = await get(message.id);
+      if (
+        draft.accountId !== identity.account.id ||
+        draft.saved ||
+        draft.attempt ||
+        draft.retrievalToken
+      )
+        throw new CaptureError(
+          "This capture cannot retrieve a page right now.",
+        );
+      const next = { ...draft, retrievalToken: crypto.randomUUID() };
+      await put(next);
+      return next;
+    });
+    try {
+      const result = await authenticated("/extension/v1/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountId: before.accountId,
+          source: { url: before.url, originalText: before.text },
+        }),
+      });
+      if (
+        result.accountId !== before.accountId ||
+        !result.draft ||
+        typeof result.draft.title !== "string" ||
+        typeof result.draft.summary !== "string" ||
+        typeof result.draft.category !== "string" ||
+        !Array.isArray(result.draft.tags) ||
+        result.draft.tags.some(
+          (tag) => typeof tag !== "string" || tag.length > 40,
+        ) ||
+        (result.retrieval &&
+          (!uuid.test(result.retrieval.id) ||
+            result.retrieval.snapshot?.requestedUrl !== before.url ||
+            typeof result.retrieval.snapshot.text !== "string" ||
+            result.retrieval.snapshot.text.length > 30000))
+      )
+        throw new CaptureError(
+          "Page suggestions were unreadable. Save manually or retry.",
+        );
+      return await serial(async () => {
+        const current = await get(before.id);
+        if (
+          current.retrievalToken !== before.retrievalToken ||
+          current.saved ||
+          current.attempt
+        )
+          return current;
+        return put({
+          ...applyDraftSuggestions(current, before, result),
+          retrievalToken: undefined,
+        });
+      });
+    } catch (error) {
+      await serial(async () => {
+        const current = await get(before.id).catch(() => undefined);
+        if (current?.retrievalToken === before.retrievalToken)
+          await put({ ...current, retrievalToken: undefined });
+      });
+      throw error;
+    }
+  }
 }

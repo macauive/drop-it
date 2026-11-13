@@ -333,7 +333,7 @@ try {
     worker.kill("SIGKILL");
   }
 
-  // Rehearse pg_dump/pg_restore across the v10 -> v11 boundary with original
+  // Rehearse pg_dump/pg_restore across the v10 -> v13 boundary with original
   // files and active credentials, without ever opening a hosted database.
   const source = await fixture.create("legacy_restore"),
     sourceAuth = new Auth(source, config),
@@ -384,7 +384,11 @@ try {
   await source.query(
     "ALTER TABLE users DROP COLUMN email,DROP COLUMN email_verified_at",
   );
-  await source.query("DELETE FROM schema_migrations WHERE version IN (11,12)");
+  await source.query("DROP TABLE page_captures");
+  await source.query("ALTER TABLE sources DROP COLUMN page_snapshot");
+  await source.query(
+    "DELETE FROM schema_migrations WHERE version IN (11,12,13)",
+  );
   const tables = [
     "users",
     "sessions",
@@ -400,7 +404,9 @@ try {
       const projection =
         table === "users"
           ? "id,singleton,username,password_hash,created_at,auth_version,recovery_hash,recovery_created_at,ai_search_enabled,chatgpt_plan_selected"
-          : "*";
+          : table === "sources"
+            ? "id,owner,url,original_text,attachment_id,fingerprint,normalized_url,created_at"
+            : "*";
       result[table] = (
         await database.query(
           `SELECT count(*)::int AS count,md5(coalesce(string_agg(row_to_json(records)::text,'' ORDER BY row_to_json(records)::text),'')) AS digest FROM (SELECT ${projection} FROM ${table}) records`,
@@ -433,6 +439,30 @@ try {
   await migrate(restored);
   await migrate(restored);
   assert.deepEqual(await fingerprint(restored), before);
+  assert.equal(
+    (
+      await restored.query<{ version: number }>(
+        "SELECT max(version)::int AS version FROM schema_migrations",
+      )
+    ).rows[0].version,
+    13,
+  );
+  assert.equal(
+    (
+      await restored.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM sources WHERE page_snapshot IS NOT NULL",
+      )
+    ).rows[0].count,
+    0,
+  );
+  assert.equal(
+    (
+      await restored.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM page_captures",
+      )
+    ).rows[0].count,
+    0,
+  );
   const restoredAuth = new Auth(restored, config),
     restoredLibrary = new Library(restored);
   assert.equal(await restoredAuth.sessionOwner(legacySession), legacyOwner);

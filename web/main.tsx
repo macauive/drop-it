@@ -168,7 +168,13 @@ const deletionDate = (value: string) =>
 function Brand() {
   return (
     <div className="brand">
-      <img className="brand-icon" src={brandIcon} alt="" width={32} height={32} />
+      <img
+        className="brand-icon"
+        src={brandIcon}
+        alt=""
+        width={32}
+        height={32}
+      />
       <span className="brand-name">
         drop it<span className="brand-dot">.</span>
       </span>
@@ -699,7 +705,12 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
   }, []);
   const [adding, setAdding] = useState(Boolean(sharedCapture));
   const [hostDraft, setHostDraft] = useState<
-    { source: NonNullable<SaveInput["source"]>; draft: DraftResult } | undefined
+    | {
+        source: NonNullable<SaveInput["source"]>;
+        draft: DraftResult;
+        retrieval?: import("../shared/schema.js").CaptureDraftResult["retrieval"];
+      }
+    | undefined
   >();
   const [hostDetail, setHostDetail] = useState<
     Awaited<ReturnType<typeof client.get>> | undefined
@@ -835,6 +846,7 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
         setHostDraft({
           source: presentation.source,
           draft: presentation.draft,
+          retrieval: presentation.retrieval,
         });
         setAdding(true);
       } else if (presentation.kind === "trashed") {
@@ -2012,8 +2024,8 @@ function SettingsPanel({
           <h3 id="settings-help">Capture and help</h3>
           <p>
             All drops contains everything outside Trash. Saved is a bookmark you
-            can toggle with the ribbon. Links keep their address; Drop It does
-            not fetch the webpage.
+            can toggle with the ribbon. Links keep their address. In New drop,
+            optionally retrieve a public page before saving.
           </p>
           <p>
             Paste an image into New drop, or use the file picker. On browsers
@@ -2083,7 +2095,11 @@ function Capture({
   onSaved: (item: Item) => void;
   categories: string[];
   aiAvailable: boolean;
-  initial?: { source: NonNullable<SaveInput["source"]>; draft: DraftResult };
+  initial?: {
+    source: NonNullable<SaveInput["source"]>;
+    draft: DraftResult;
+    retrieval?: import("../shared/schema.js").CaptureDraftResult["retrieval"];
+  };
   shared?: SharedCapture;
   onOpenExisting: (id: string) => void;
 }) {
@@ -2106,6 +2122,88 @@ function Capture({
   const [originalExtraction, setOriginalExtraction] = useState(
     initial?.source.originalText || initial?.draft.extractedText || "",
   );
+  const [retrieval, setRetrieval] = useState<
+    import("../shared/schema.js").CaptureDraftResult["retrieval"]
+  >(initial?.retrieval);
+  const [retrieving, setRetrieving] = useState(false);
+  const [retrievalNotice, setRetrievalNotice] = useState("");
+  const retrievalGeneration = useRef(0);
+  const editedFields = useRef(new Set<string>());
+  const latestCapture = useRef({ title, summary, category, tags, text, url });
+  useLayoutEffect(() => {
+    latestCapture.current = { title, summary, category, tags, text, url };
+  }, [title, summary, category, tags, text, url]);
+  useEffect(
+    () => () => {
+      retrievalGeneration.current++;
+    },
+    [],
+  );
+  const candidateUrl =
+    url.trim() || (/^https?:\/\/\S+$/.test(text.trim()) ? text.trim() : "");
+  const cancelRetrieval = () => {
+    retrievalGeneration.current++;
+    setRetrieving(false);
+  };
+  const retrieve = async () => {
+    if (
+      actionLock.current ||
+      retrieving ||
+      !candidateUrl ||
+      file ||
+      retainedAttachmentId
+    )
+      return;
+    const generation = ++retrievalGeneration.current;
+    const before = latestCapture.current;
+    setRetrieving(true);
+    setRetrievalNotice("");
+    try {
+      const result = await client.draft(
+        { url: candidateUrl, originalText: text },
+        true,
+      );
+      if (
+        generation !== retrievalGeneration.current ||
+        latestCapture.current.url !== before.url ||
+        latestCapture.current.text !== before.text
+      )
+        return;
+      setRetrieval(result.retrieval);
+      setRetrievalNotice(
+        [result.retrievalNotice, result.draftNotice].filter(Boolean).join(" "),
+      );
+      if (!result.retrieval) return;
+      if (!before.url) setUrl(candidateUrl);
+      const touched = new Set(editedFields.current);
+      setTitle((value) =>
+        !touched.has("title") && value === before.title
+          ? result.draft.title
+          : value,
+      );
+      setSummary((value) =>
+        !touched.has("summary") && value === before.summary
+          ? result.draft.summary
+          : value,
+      );
+      setCategory((value) =>
+        !touched.has("category") && value === before.category
+          ? result.draft.category
+          : value,
+      );
+      setTags((value) =>
+        !touched.has("tags") && value === before.tags
+          ? result.draft.tags.join(", ")
+          : value,
+      );
+      setDrafted(true);
+    } catch (error) {
+      if (generation === retrievalGeneration.current)
+        setRetrievalNotice(message(error));
+    } finally {
+      if (generation === retrievalGeneration.current) setRetrieving(false);
+    }
+  };
   const [transcriptionEdited, setTranscriptionEdited] = useState(false);
   const [retainedAttachmentId, setRetainedAttachmentId] = useState(
     initial?.source.attachmentId,
@@ -2200,6 +2298,8 @@ function Capture({
       return;
     }
     const replaceSource = () => {
+      cancelRetrieval();
+      setRetrieval(undefined);
       void releaseUpload();
       setRetainedAttachmentId(undefined);
       setOriginalExtraction("");
@@ -2246,10 +2346,16 @@ function Capture({
             : text,
       url: fileOnly ? "" : url,
       attachmentId: selected ? upload.current?.id : retainedAttachmentId,
+      ...(!selected &&
+      !retainedAttachmentId &&
+      retrieval?.snapshot.requestedUrl === url
+        ? { retrievalId: retrieval.id }
+        : {}),
     };
   };
   const draft = async (sourceFile?: File) => {
     if (actionLock.current) return;
+    cancelRetrieval();
     actionLock.current = true;
     setBusy(true);
     setDrafting(true);
@@ -2283,6 +2389,7 @@ function Capture({
   };
   const save = async (allowDuplicate = false) => {
     if (actionLock.current) return;
+    cancelRetrieval();
     actionLock.current = true;
     setBusy(true);
     setError("");
@@ -2502,11 +2609,62 @@ function Capture({
                 <input
                   type="url"
                   value={url}
-                  onChange={(e) => setUrl(e.target.value)}
+                  onChange={(e) => {
+                    cancelRetrieval();
+                    setRetrieval(undefined);
+                    setUrl(e.target.value);
+                  }}
                   placeholder="https://"
                   maxLength={2048}
                 />
               </label>
+              {!file && !retainedAttachmentId && (
+                <section aria-label="Page retrieval">
+                  <button
+                    type="button"
+                    disabled={!candidateUrl}
+                    onClick={() =>
+                      retrieving ? cancelRetrieval() : void retrieve()
+                    }
+                  >
+                    {retrieving
+                      ? "Cancel retrieval"
+                      : "Retrieve page & suggest fields"}
+                  </button>
+                  <p className="field-note">
+                    Sends this public link to Firecrawl to retrieve readable
+                    page text, then uses AI to suggest fields. Review before
+                    saving. Manual entry is always available.
+                  </p>
+                  {retrievalNotice && (
+                    <p role="status" className="settings-notice">
+                      {retrievalNotice}
+                    </p>
+                  )}
+                  {retrieval && (
+                    <details>
+                      <summary>
+                        Retrieved page snapshot ·{" "}
+                        {retrieval.snapshot.truncated ? "Excerpt" : "Page text"}
+                      </summary>
+                      <p className="field-note">
+                        Retrieved {date(retrieval.snapshot.capturedAt)} via
+                        Firecrawl from {retrieval.snapshot.finalUrl}. Saved
+                        separately from your original text and AI summary.
+                      </p>
+                      <pre className="source-text">
+                        {retrieval.snapshot.text}
+                      </pre>
+                      <button
+                        type="button"
+                        onClick={() => setRetrieval(undefined)}
+                      >
+                        Save without snapshot
+                      </button>
+                    </details>
+                  )}
+                </section>
+              )}
               <label>
                 {file || retainedAttachmentId ? "Review transcription" : "Text"}
                 <textarea
@@ -2531,6 +2689,7 @@ function Capture({
                 <input
                   value={captureTitle}
                   onChange={(e) => {
+                    editedFields.current.add("title");
                     setTitle(e.target.value);
                     setTitleEdited(true);
                   }}
@@ -2572,7 +2731,10 @@ function Capture({
                   Summary
                   <textarea
                     value={summary}
-                    onChange={(e) => setSummary(e.target.value)}
+                    onChange={(e) => {
+                      editedFields.current.add("summary");
+                      setSummary(e.target.value);
+                    }}
                     maxLength={4000}
                     rows={2}
                   />
@@ -2580,14 +2742,20 @@ function Capture({
                 <div className="form-grid">
                   <CategoryField
                     value={category}
-                    onChange={setCategory}
+                    onChange={(value) => {
+                      editedFields.current.add("category");
+                      setCategory(value);
+                    }}
                     categories={categories}
                   />
                   <label>
                     Tags
                     <input
                       value={tags}
-                      onChange={(e) => setTags(e.target.value)}
+                      onChange={(e) => {
+                        editedFields.current.add("tags");
+                        setTags(e.target.value);
+                      }}
                       placeholder="python, weekend"
                       maxLength={480}
                     />
@@ -3015,6 +3183,23 @@ function Detail({
                       alt="Original saved screenshot"
                     />
                   )}
+                {detail.source.pageSnapshot && (
+                  <details className="transcription">
+                    <summary>Retrieved page snapshot</summary>
+                    <p>
+                      Retrieved {date(detail.source.pageSnapshot.capturedAt)}{" "}
+                      via Firecrawl
+                      {detail.source.pageSnapshot.truncated
+                        ? " · Bounded excerpt"
+                        : ""}
+                      .
+                    </p>
+                    <p>{detail.source.pageSnapshot.finalUrl}</p>
+                    <pre className="source-text">
+                      {detail.source.pageSnapshot.text}
+                    </pre>
+                  </details>
+                )}
                 {detail.source.originalText && (
                   <div className="transcription">
                     <button

@@ -118,7 +118,33 @@
             placeholder="What caught your attention?"
           ></textarea>
         </details>
-        <input id="summary" name="summary" type="hidden" value="" />
+        <section aria-label="Page retrieval">
+          <button id="retrieve" type="button">
+            Retrieve page & suggest fields
+          </button>
+          <p class="field-help">
+            Sends this public link to Firecrawl for readable page text, then
+            uses AI to suggest fields. Review before saving, or enter details
+            manually.
+          </p>
+          <p id="retrieval-notice" role="status" hidden></p>
+          <details id="page-snapshot" hidden>
+            <summary>Retrieved page snapshot</summary>
+            <p id="page-provenance" class="field-help"></p>
+            <pre id="page-text"></pre>
+            <button id="remove-snapshot" type="button">
+              Save without snapshot
+            </button>
+          </details>
+        </section>
+        <label for="summary"
+          >Summary <span class="optional">AI suggestion · editable</span></label
+        ><textarea
+          id="summary"
+          name="summary"
+          maxlength="4000"
+          rows="3"
+        ></textarea>
         <section id="duplicates" hidden>
           <strong>Already in your library</strong>
           <div id="duplicate-links"></div>

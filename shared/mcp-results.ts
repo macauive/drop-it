@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { idSchema, views } from "./schema.js";
 import { fileTypes } from "./files.js";
+import { pageSnapshotSchema } from "./page.js";
 
 // These describe the JSON wire format, including dates serialized by the DB
 // adapters. They deliberately exclude transport-only original file bytes.
@@ -41,6 +42,7 @@ export const sourceResultSchema = z
     hasFile: z.boolean(),
     filename: z.string().max(255).nullable(),
     mime: z.enum(Object.values(fileTypes)).nullable(),
+    pageSnapshot: pageSnapshotSchema.nullable().optional(),
   })
   .strict();
 
@@ -76,7 +78,17 @@ export const draftOutputSchema = z
 
 export const mcpOutputSchemas = {
   search_drops: searchResultSchema,
-  draft_drop: z.object({ draft: draftOutputSchema }).strict(),
+  draft_drop: z
+    .object({
+      draft: draftOutputSchema,
+      retrieval: z
+        .object({ id: idSchema, snapshot: pageSnapshotSchema })
+        .strict()
+        .optional(),
+      retrievalNotice: z.string().max(1000).optional(),
+      draftNotice: z.string().max(1000).optional(),
+    })
+    .strict(),
   get_drop: detailResultSchema,
   save_drop: detailResultSchema.extend({ replayed: z.boolean() }).strict(),
   update_drop: detailResultSchema,

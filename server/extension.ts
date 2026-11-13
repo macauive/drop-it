@@ -11,6 +11,7 @@ import {
   urlSchema,
   categorySchema,
   usernameSchema,
+  draftSchema,
 } from "../shared/schema.js";
 import { extensionOrigin } from "../shared/extension.js";
 
@@ -22,7 +23,11 @@ export const extensionCaptureSchema = fieldsSchema
     // A safety precondition, never an authority to select an owner.
     accountId: idSchema,
     source: z
-      .object({ originalText: z.string().max(50000), url: urlSchema })
+      .object({
+        originalText: z.string().max(50000),
+        url: urlSchema,
+        retrievalId: idSchema.optional(),
+      })
       .strict(),
     allowDuplicate: z.boolean().default(false),
   })
@@ -148,6 +153,28 @@ export function addExtensionRoutes(
         z.string().trim().min(1).max(40).parse(row.tag),
       ),
     });
+  });
+  router.post("/draft", express.json({ limit: "350kb" }), async (req, res) => {
+    const { accountId, source } = z
+      .object({
+        accountId: idSchema,
+        source: z
+          .object({ originalText: z.string().max(50000), url: urlSchema })
+          .strict(),
+      })
+      .strict()
+      .parse(req.body);
+    if (accountId !== res.locals.owner)
+      throw new AppError(
+        409,
+        "ACCOUNT_CHANGED",
+        "This capture belongs to another account. Start a new capture.",
+      );
+    const result = await library.draft(
+      res.locals.owner,
+      draftSchema.parse({ source, fetchPage: true }),
+    );
+    res.json({ accountId, ...result });
   });
   router.post(
     "/capture",

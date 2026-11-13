@@ -381,4 +381,21 @@ export async function migrate(db: Database) {
     );
     await tx.query("INSERT INTO schema_migrations(version) VALUES(12)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=13"))
+        .rows.length
+    )
+      return;
+    await tx.query("ALTER TABLE sources ADD COLUMN page_snapshot jsonb");
+    await tx.query(`CREATE TABLE page_captures (
+      id uuid PRIMARY KEY, owner uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      url text NOT NULL, snapshot jsonb, created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      CHECK(octet_length(url)<=8192), CHECK(snapshot IS NULL OR octet_length(snapshot::text)<=200000)
+    )`);
+    await tx.query(
+      "CREATE INDEX page_captures_usage ON page_captures(created_at,owner)",
+    );
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(13)");
+  });
 }
