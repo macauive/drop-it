@@ -1,5 +1,5 @@
 import { serviceOrigin } from "./config.js";
-import { createController } from "./controller.js";
+import { createController, openReview } from "./controller.js";
 
 const controller = createController(chrome, serviceOrigin);
 const ready = chrome.storage.session.setAccessLevel({
@@ -29,14 +29,12 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     .catch(async () => {
       await chrome.storage.session.set({
         connectionNotice:
-          "This capture could not open. Use a web page or a selection of up to 50,000 characters.",
+          "This capture could not open. Retry the right-click action on a web page with a selection of up to 50,000 characters.",
       });
-      await chrome.windows.create({
-        url: chrome.runtime.getURL("popup.html?notice=1"),
-        type: "popup",
-        width: 440,
-        height: 600,
-      });
+      await openReview(chrome, "popup.html?notice=1&review=1");
+    })
+    .catch(() => {
+      // Keep the notice for the next toolbar open if neither surface opens.
     });
 });
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

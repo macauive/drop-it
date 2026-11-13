@@ -2,12 +2,18 @@ import {
   CaptureError,
   jsonRequest,
   makeCapture,
+  makeManualCapture,
   readValues,
   savePayload,
 } from "./capture.js";
 import { createOAuth } from "./oauth.js";
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+export async function openReview(api, path) {
+  const url = api.runtime.getURL(path);
+  // A regular extension tab also works in hosts that cannot create windows.
+  await api.tabs.create({ url, active: true });
+}
 export function createController(api, origin, transport = fetch) {
   const oauth = createOAuth(api, origin, transport);
   let queue = Promise.resolve();
@@ -147,7 +153,12 @@ export function createController(api, origin, transport = fetch) {
             : ""),
       };
     try {
-      return await verifyConnection();
+      const result = await verifyConnection();
+      if (connectionNotice) {
+        await api.storage.session.remove("connectionNotice");
+        if (!result.notice) result.notice = connectionNotice;
+      }
+      return result;
     } catch (error) {
       return {
         connected: false,
@@ -172,32 +183,51 @@ export function createController(api, origin, transport = fetch) {
           "The source tab closed. Open a web page to capture it.",
         );
       }
-    } else [tab] = await api.tabs.query({ active: true, currentWindow: true });
+    } else
+      [tab] = await api.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab) throw new CaptureError("Open a web page to capture it.");
     const { activeAccount } = await api.storage.session.get("activeAccount");
-    if (!fresh) {
-      const existing = Object.values(await drafts()).findLast(
-        (draft) =>
-          draft.toolbar &&
-          draft.tabId === tab.id &&
-          draft.pageUrl === tab.url &&
-          (!draft.accountId || draft.accountId === activeAccount?.id) &&
-          !draft.saved,
-      );
-      if (existing) return existing;
-    }
+    const pending = Object.values(await drafts()).findLast(
+      (draft) =>
+        draft.toolbar &&
+        draft.tabId === tab.id &&
+        (!draft.accountId || draft.accountId === activeAccount?.id) &&
+        !draft.saved,
+    );
+    // Resuming user edits must not depend on a renewed activeTab grant. Keep
+    // the preserved source explicit rather than pretending it is today's page.
+    if (!fresh && pending && (pending.manual || !tab.url))
+      return { ...pending, resumed: true };
     let selectionText = "";
     try {
-      const [result] = await api.scripting.executeScript({
+      const [injection] = await api.scripting.executeScript({
         target: { tabId: tab.id },
-        func: () => window.getSelection()?.toString() || "",
+        func: () => ({
+          url: window.location.href,
+          title: document.title.slice(0, 200),
+          selectionText: (window.getSelection()?.toString() || "").slice(
+            0,
+            50001,
+          ),
+        }),
       });
-      if (typeof result?.result === "string") selectionText = result.result;
+      const page = injection?.result;
+      // activeTab can permit injection while a browser host omits Tab.url.
+      // Read metadata only from this user-invoked tab, never another open tab.
+      if (typeof page?.url === "string") tab = { ...tab, url: page.url };
+      if (typeof page?.title === "string")
+        tab = { ...tab, title: page.title.slice(0, 200) };
+      if (typeof page?.selectionText === "string")
+        selectionText = page.selectionText;
     } catch {
-      /* Restricted pages may still permit URL capture. */
+      /* A known page URL still permits URL-only capture if injection is denied. */
     }
+    if (!fresh && pending && pending.pageUrl === tab.url)
+      return { ...pending, resumed: true };
     return put({
-      ...makeCapture({ selectionText }, tab),
+      ...(tab.url
+        ? makeCapture({ selectionText }, tab)
+        : makeManualCapture(tab)),
       toolbar: true,
       accountId: activeAccount?.id ?? null,
     });
@@ -385,14 +415,10 @@ export function createController(api, origin, transport = fetch) {
           ...makeCapture(info, tab),
           accountId: activeAccount?.id ?? null,
         });
-        await api.windows.create({
-          url: api.runtime.getURL(
-            `popup.html?draft=${draft.id}${Number.isInteger(tab?.id) ? `&tab=${tab.id}` : ""}`,
-          ),
-          type: "popup",
-          width: 440,
-          height: 760,
-        });
+        await openReview(
+          api,
+          `popup.html?draft=${draft.id}&review=1${Number.isInteger(tab?.id) ? `&tab=${tab.id}` : ""}`,
+        );
       });
     },
   };

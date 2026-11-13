@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const keys = ["title", "url", "text", "summary", "category", "tags", "notes"];
 const query = new URLSearchParams(location.search);
+document.documentElement.classList.toggle("review", query.has("review"));
 let draft,
   currentId = query.get("draft"),
   identity = { connected: false, state: "checking", account: null },
@@ -14,9 +15,19 @@ let sourceTabId =
   query.has("tab") && /^\d+$/.test(query.get("tab"))
     ? Number(query.get("tab"))
     : undefined;
+let lastEdit = "",
+  editError = false;
 function notice(text = "") {
   $("message").textContent = text;
   $("message").hidden = !text;
+}
+function captureNotice(value) {
+  if (value?.saved) return "";
+  if (value?.manual)
+    return "Page access is unavailable. Enter or review the source link, or use the page's right-click menu for automatic capture.";
+  if (value?.resumed)
+    return "Restored your draft. Review the source link before saving.";
+  return "";
 }
 async function call(type, rest = {}) {
   const response = await chrome.runtime.sendMessage({ type, ...rest });
@@ -41,15 +52,23 @@ function clearSuggestions() {
 }
 function clearDraft() {
   draft = undefined;
+  lastEdit = "";
+  editError = false;
   for (const key of keys) $(key).value = "";
   $("saved-title").textContent = "";
   $("duplicate-links").replaceChildren();
   $("duplicates").hidden = true;
+  $("preview-title").textContent = "";
+  $("preview-url").textContent = "";
+  $("notes-details").open = false;
   confirming = "";
   $("discard-confirm").hidden = true;
   controls();
 }
 function controls() {
+  for (const element of document.body.children)
+    if (element.id !== "discard-confirm" && element.tagName !== "SCRIPT")
+      element.inert = Boolean(confirming);
   const connected = identity.connected;
   $("connection").hidden = connected;
   $("disconnect").hidden = !connected;
@@ -66,20 +85,27 @@ function controls() {
     identity.state === "offline"
       ? "Connection unavailable"
       : identity.account
-        ? "Reconnect your library"
-        : "Connect your library";
+        ? "Reconnect to Drop It"
+        : "Connect to Drop It";
   $("connection-copy").textContent =
     identity.state === "offline"
-      ? "Your draft is preserved. Check the connection again to continue saving."
+      ? "Your draft is preserved. Try connecting again to continue."
       : identity.account
-        ? `Reconnect ${identity.account.label} to continue your draft. Switching accounts clears previous account captures.`
-        : "Sign in to the same Drop It account you use on the web or in ChatGPT.";
+        ? `Reconnect ${identity.account.label} to continue your draft.`
+        : "Keep pages, selected text, and links in your library.";
   $("retry-connection").hidden = identity.state !== "offline";
   $("retry-connection").disabled = busy;
-  $("connect").textContent = identity.account
-    ? "Reconnect Drop It"
-    : "Connect Drop It";
-  $("capture").hidden = !draft || Boolean(draft.saved);
+  $("connect").textContent = busy
+    ? "Connecting…"
+    : identity.account
+      ? "Reconnect Drop It"
+      : "Connect Drop It";
+  $("capture").hidden = !connected || !draft || Boolean(draft.saved);
+  $("save-bar").hidden = !connected || !draft || Boolean(draft.saved);
+  $("capture-heading").hidden = !connected || Boolean(draft?.saved);
+  $("empty").hidden = !connected || Boolean(draft);
+  $("preview").hidden = connected || !draft || Boolean(draft.saved);
+  if (!draft) $("kind").textContent = "CAPTURE";
   $("success").hidden = !draft?.saved;
   $("save").disabled = !connected || busy || !draft || Boolean(confirming);
   $("save").textContent = busy
@@ -89,7 +115,6 @@ function controls() {
       : "Save drop";
   for (const id of ["connect", "disconnect", "new-capture", "discard"])
     $(id).disabled = busy || Boolean(confirming);
-  $("connect").disabled ||= identity.state === "offline";
   $("again").disabled = busy;
   $("discard").hidden = !draft || Boolean(draft.saved);
   for (const key of keys)
@@ -102,10 +127,19 @@ function showDraft(next) {
   currentId = next.id;
   if (Number.isInteger(next.tabId)) sourceTabId = next.tabId;
   for (const key of keys) $(key).value = next[key] || "";
+  lastEdit = JSON.stringify([next.id, values()]);
+  editError = false;
+  $("preview-title").textContent = next.title || "Untitled capture";
+  try {
+    $("preview-url").textContent = new URL(next.url).hostname;
+  } catch {
+    $("preview-url").textContent = "Your current capture";
+  }
+  $("notes-details").open = Boolean(next.notes);
   $("text-field").hidden = next.kind !== "selection";
   $("kind").textContent =
-    { page: "WEB PAGE", selection: "SELECTED TEXT", link: "LINK" }[next.kind] ||
-    "BROWSER CAPTURE";
+    { page: "PAGE", selection: "SELECTED TEXT", link: "LINK" }[next.kind] ||
+    "CAPTURE";
   $("duplicates").hidden = true;
   $("allow-duplicate").checked = false;
   if (next.saved) $("saved-title").textContent = next.saved.title;
@@ -113,6 +147,7 @@ function showDraft(next) {
     notice(
       "The last save needs confirmation. Retry this capture to confirm it safely.",
     );
+  else if (captureNotice(next)) notice(captureNotice(next));
   suggestTags();
   controls();
 }
@@ -232,8 +267,8 @@ $("connect").addEventListener("click", async () => {
     identity = await call("connect");
     await restoreDraft();
     await loadSuggestions();
-    if (!identity.notice && draft) notice();
-    else if (identity.notice) notice(identity.notice);
+    if (identity.notice) notice(identity.notice);
+    else notice(captureNotice(draft));
   } catch (error) {
     notice(error.message);
   } finally {
@@ -281,13 +316,18 @@ async function replaceCapture() {
   });
   if (previous) await call("discard", { id: previous }).catch(() => {});
   showDraft(next);
-  notice();
+  notice(captureNotice(next) || "New capture ready. Review it before saving.");
 }
 function focusCapture() {
   $(draft && !draft.saved ? "title" : "new-capture").focus();
 }
 function askDiscard(action) {
+  if (busy || confirming) return;
   confirming = action;
+  $("discard-heading").textContent =
+    action === "new" ? "Start a new capture?" : "Discard this draft?";
+  $("confirm-discard").textContent =
+    action === "new" ? "Start new capture" : "Discard draft";
   $("discard-copy").textContent = draft?.attempt
     ? "The last save may already be in your library. Check the library before discarding this local confirmation."
     : action === "new"
@@ -305,6 +345,7 @@ function cancelDiscard() {
   $(action === "new" ? "new-capture" : "discard").focus();
 }
 $("new-capture").addEventListener("click", async () => {
+  if (busy || confirming) return;
   if (draft && !draft.saved) {
     askDiscard("new");
     return;
@@ -324,9 +365,20 @@ $("new-capture").addEventListener("click", async () => {
 $("discard").addEventListener("click", () => askDiscard("discard"));
 $("keep-editing").addEventListener("click", cancelDiscard);
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && confirming) {
+  if (!confirming) return;
+  if (event.key === "Escape") {
     event.preventDefault();
     cancelDiscard();
+  } else if (event.key === "Tab") {
+    const first = $("keep-editing"),
+      last = $("confirm-discard");
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 });
 $("confirm-discard").addEventListener("click", async () => {
@@ -369,16 +421,47 @@ $("again").addEventListener("click", async () => {
     focusCapture();
   }
 });
-$("capture").addEventListener("input", () => {
-  if (!draft || draft.attempt || busy) return;
+function persistDraft() {
+  if (!draft || draft.saved || draft.attempt || busy || confirming) return;
   const edited = values(),
     id = draft.id;
+  const snapshot = JSON.stringify([id, edited]);
+  if (snapshot === lastEdit) return;
+  lastEdit = snapshot;
   // Dispatch immediately so closing the popup does not drop edits waiting in
   // a popup-local promise chain. The background controller orders mutations.
-  const update = call("update", { id, values: edited });
+  const update = call("update", { id, values: edited }).then(
+    (result) => {
+      if (draft?.id === id && lastEdit === snapshot && editError) {
+        editError = false;
+        notice(captureNotice(draft));
+      }
+      return result;
+    },
+    (error) => {
+      if (draft?.id === id && lastEdit === snapshot) {
+        lastEdit = "";
+        editError = true;
+        notice(
+          "Your last edit could not be kept. Keep this popup open and try editing again.",
+        );
+      }
+      throw error;
+    },
+  );
   writing = Promise.all([writing.catch(() => {}), update]).then(() => {});
   void writing.catch(() => {});
   suggestTags();
+}
+for (const key of keys) {
+  // Listen at the field itself: some hosts do not bubble textarea edits.
+  for (const name of ["input", "change", "blur"])
+    $(key).addEventListener(name, persistDraft);
+}
+window.addEventListener("blur", persistDraft);
+window.addEventListener("pagehide", persistDraft);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") persistDraft();
 });
 $("capture").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -456,13 +539,15 @@ async function init() {
   await loadSuggestions();
   try {
     const { shortcut } = await call("shortcut");
-    $("shortcut-info").textContent = shortcut
-      ? `Capture shortcut: ${shortcut}`
-      : "Assign a capture shortcut at chrome://extensions/shortcuts.";
+    $("shortcut-info").textContent = shortcut || "Set a keyboard shortcut";
+    $("shortcut-info").title = shortcut
+      ? "Capture shortcut"
+      : "Assign a shortcut at chrome://extensions/shortcuts";
     $("shortcut-info").hidden = false;
   } catch {
     /* Capture also works from the toolbar. */
   }
   initialized = true;
 }
+controls();
 void init();

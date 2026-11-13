@@ -74,6 +74,8 @@ let account = "a",
   selection = "",
   offline = false,
   loseResponse = false,
+  omitTabMetadata = false,
+  denyPageAccess = false,
   lastReview = "";
 let tab = {
   id: 7,
@@ -130,28 +132,30 @@ const api = {
   },
   tabs: {
     async query() {
-      return [tab];
+      return [omitTabMetadata ? { id: tab.id } : tab];
     },
     async get(id: number) {
       if (id !== tab.id) throw new Error("Source tab closed");
-      return tab;
+      return omitTabMetadata ? { id: tab.id } : tab;
     },
-    async create() {},
+    async create(value: { url: string }) {
+      lastReview = value.url;
+    },
   },
   scripting: {
     async executeScript() {
+      if (denyPageAccess) throw new Error("Synthetic page access unavailable");
       if (!tab.url.startsWith("http")) throw new Error("Restricted page");
-      return [{ result: selection }];
+      return [
+        {
+          result: { url: tab.url, title: tab.title, selectionText: selection },
+        },
+      ];
     },
   },
   commands: {
     async getAll() {
       return [{ name: "_execute_action", shortcut: "Command+Shift+Y" }];
-    },
-  },
-  windows: {
-    async create(value: { url: string }) {
-      lastReview = value.url;
     },
   },
 };
@@ -181,6 +185,12 @@ const scenario = z.discriminatedUnion("type", [
     .object({ type: z.literal("selection"), text: z.string().max(50000) })
     .strict(),
   z.object({ type: z.literal("offline"), value: z.boolean() }).strict(),
+  z
+    .object({ type: z.literal("omit-tab-metadata"), value: z.boolean() })
+    .strict(),
+  z
+    .object({ type: z.literal("deny-page-access"), value: z.boolean() })
+    .strict(),
   z
     .object({
       type: z.enum([
@@ -219,7 +229,7 @@ server.on("request", async (req, res) => {
       if (path === "/preview/browser-api.js") {
         res.setHeader("Content-Type", "text/javascript");
         res.end(
-          `const handlers=[];globalThis.chrome={runtime:{id:${JSON.stringify(extensionId)},onMessage:{addListener(fn){handlers.push(fn)}},async sendMessage(message){const response=await fetch('/preview/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(message)});return response.json()}}};const events=new EventSource('/preview/events');events.onmessage=event=>{for(const handler of handlers)handler(JSON.parse(event.data),{id:chrome.runtime.id})};`,
+          `if(new URLSearchParams(location.search).has('non-bubbling-notes')){for(const name of ['input','change'])document.getElementById('notes').addEventListener(name,event=>event.stopPropagation());}if(new URLSearchParams(location.search).has('no-native-dialog'))HTMLDialogElement.prototype.showModal=function(){};const handlers=[];globalThis.chrome={runtime:{id:${JSON.stringify(extensionId)},onMessage:{addListener(fn){handlers.push(fn)}},async sendMessage(message){const response=await fetch('/preview/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(message)});return response.json()}}};const events=new EventSource('/preview/events');events.onmessage=event=>{for(const handler of handlers)handler(JSON.parse(event.data),{id:chrome.runtime.id})};`,
         );
         return;
       }
@@ -297,6 +307,12 @@ server.on("request", async (req, res) => {
                   tab,
                 );
                 data = { url: lastReview };
+                break;
+              case "omit-tab-metadata":
+                omitTabMetadata = action.value;
+                break;
+              case "deny-page-access":
+                denyPageAccess = action.value;
                 break;
             }
           }

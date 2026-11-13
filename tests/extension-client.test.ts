@@ -26,7 +26,9 @@ function fixture() {
   const store: Record<string, unknown> = {};
   const calls: Array<{ path: string; init: RequestInit }> = [];
   const windows: unknown[] = [],
-    tabs: unknown[] = [];
+    tabs: unknown[] = [],
+    tabQueries: unknown[] = [];
+  let hideTabMetadata = false;
   let account = { id: randomUUID(), label: "@synthetic" };
   let activeTab = {
     id: 7,
@@ -93,10 +95,11 @@ function fixture() {
     tabs: {
       async get(id: number) {
         if (id !== activeTab.id) throw new Error("Tab closed");
-        return activeTab;
+        return hideTabMetadata ? { id: activeTab.id } : activeTab;
       },
-      async query() {
-        return [activeTab];
+      async query(options: unknown) {
+        tabQueries.push(options);
+        return [hideTabMetadata ? { id: activeTab.id } : activeTab];
       },
       async create(value: unknown) {
         tabs.push(value);
@@ -109,7 +112,15 @@ function fixture() {
     },
     scripting: {
       async executeScript() {
-        return [{ result: selection }];
+        return [
+          {
+            result: {
+              url: activeTab.url,
+              title: activeTab.title,
+              selectionText: selection,
+            },
+          },
+        ];
       },
     },
     runtime: {
@@ -120,6 +131,7 @@ function fixture() {
     windows: {
       async create(value: unknown) {
         windows.push(value);
+        return { id: 1 };
       },
     },
   };
@@ -173,6 +185,7 @@ function fixture() {
     store,
     windows,
     tabs,
+    tabQueries,
     controller,
     transport,
     account() {
@@ -192,6 +205,9 @@ function fixture() {
     },
     selection(value: string) {
       selection = value;
+    },
+    hideTabMetadata() {
+      hideTabMetadata = true;
     },
     cancel() {
       canceled = true;
@@ -252,6 +268,24 @@ test("page, selection and link capture preserve source URLs and never silently t
   assert.throws(
     () => makeCapture({ selectionText: "x".repeat(50001) }, tab),
     /50,000/,
+  );
+});
+
+test("restricted or unavailable source pages do not block connecting Drop It", async () => {
+  const f = fixture();
+  f.tab({ id: 7, title: "Extensions", url: "chrome://extensions/" });
+  await assert.rejects(f.controller.handle({ type: "capture" }), {
+    code: "UNSUPPORTED_PAGE",
+  });
+  assert.equal(
+    (await f.controller.handle({ type: "connect" })).connected,
+    true,
+  );
+  assert.throws(() => makeCapture({}, { id: 7 }), { code: "UNSUPPORTED_PAGE" });
+  f.tab({ id: 7, title: "A website", url: "https://example.org/" });
+  assert.equal(
+    (await f.controller.handle({ type: "capture" })).title,
+    "A website",
   );
 });
 test("capture validation constrains URLs, pool names, tag count and unexpected fields", () => {
@@ -336,7 +370,275 @@ test("toolbar captures selected text and preserves draft edits across popup reop
     { menuItemId: "drop-link", linkUrl: "https://target.example.org/" },
     { url: "https://example.org/", title: "Parent" },
   );
-  assert.match(JSON.stringify(f.windows), /popup.html\?draft=/);
+  assert.match(JSON.stringify(f.tabs), /popup.html\?draft=/);
+  assert.equal(f.windows.length, 0);
+});
+test("missing tab metadata is recovered from the invoked page and draft edits survive reopening", async () => {
+  const f = fixture();
+  f.hideTabMetadata();
+  f.selection("Selected text with café 🧠");
+  const draft = await f.controller.handle({ type: "capture" });
+  assert.deepEqual(f.tabQueries[0], { active: true, lastFocusedWindow: true });
+  assert.equal(draft.url, "https://example.org/article#reading");
+  assert.equal(draft.title, "Selected text with café 🧠");
+  assert.equal(draft.text, "Selected text with café 🧠");
+  const edited = {
+    ...f.values(draft),
+    title: "Chrome draft recovery",
+    notes: "Keep these edits",
+  };
+  await f.controller.handle({ type: "update", id: draft.id, values: edited });
+  const reopened = await f.controller.handle({ type: "capture" });
+  assert.equal(reopened.id, draft.id);
+  assert.equal(reopened.title, edited.title);
+  assert.equal(reopened.notes, edited.notes);
+  f.selection("");
+  const fresh = await f.controller.handle({
+    type: "capture",
+    fresh: true,
+    tabId: 7,
+  });
+  assert.notEqual(fresh.id, draft.id);
+  assert.equal(fresh.title, "Example page");
+  assert.equal(fresh.url, draft.url);
+  assert.equal(fresh.text, "");
+  assert.equal(fresh.notes, "");
+});
+test("reopening restores a stored draft before requesting page access that is no longer available", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  const draft = await f.controller.handle({ type: "capture" });
+  const edited = {
+    ...f.values(draft),
+    title: "Chrome draft recovery",
+    notes: "Preserve these edits",
+  };
+  await f.controller.handle({ type: "update", id: draft.id, values: edited });
+  f.hideTabMetadata();
+  let injections = 0;
+  f.api.scripting.executeScript = async () => {
+    injections++;
+    throw new Error("Page access expired");
+  };
+  const reopened = await f.controller.handle({ type: "capture" });
+  assert.equal(reopened.id, draft.id);
+  assert.equal(reopened.title, edited.title);
+  assert.equal(reopened.notes, edited.notes);
+  assert.equal(reopened.url, draft.url);
+  assert.equal(injections, 0);
+});
+test("right-click review opens a tab without creating windows and saves the exact selected text or link", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  for (const [info, expectedText, expectedUrl] of [
+    [
+      {
+        menuItemId: "drop-selection",
+        selectionText: "Selected café 🧠",
+        frameUrl: "https://example.org/frame",
+      },
+      "Selected café 🧠",
+      "https://example.org/frame",
+    ],
+    [
+      {
+        menuItemId: "drop-link",
+        linkUrl: "https://target.example.org/article",
+        selectionText: "Not the link content",
+      },
+      "",
+      "https://target.example.org/article",
+    ],
+  ] as const) {
+    await f.controller.context(info, {
+      id: 7,
+      url: "https://example.org/parent",
+    });
+    const opened = f.tabs.at(-1) as { url: string; active: boolean };
+    assert.equal(opened.active, true);
+    const url = new URL(opened.url);
+    assert.equal(url.protocol, "chrome-extension:");
+    assert.equal(url.pathname, "/popup.html");
+    assert.equal(url.searchParams.get("review"), "1");
+    assert.equal(url.searchParams.get("tab"), "7");
+    const draft = await f.controller.handle({
+      type: "draft",
+      id: url.searchParams.get("draft"),
+    });
+    assert.equal(draft.text, expectedText);
+    assert.equal(draft.url, expectedUrl);
+    f.setCapture(async (init) => {
+      const payload = JSON.parse(String(init.body));
+      assert.equal(payload.source.originalText, expectedText);
+      assert.equal(payload.source.url, expectedUrl);
+      assert.equal(payload.accountId, f.account().id);
+      return response(
+        { id: randomUUID(), title: draft.title, replayed: false },
+        201,
+      );
+    });
+    await f.controller.handle({
+      type: "save",
+      id: draft.id,
+      values: f.values(draft),
+    });
+  }
+  assert.equal(f.windows.length, 0);
+});
+test("missing tab metadata and denied injection open a manual draft that cannot save without a source link", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  f.hideTabMetadata();
+  f.api.scripting.executeScript = async () => {
+    throw new Error("Denied");
+  };
+  const draft = await f.controller.handle({ type: "capture" });
+  assert.equal(draft.manual, true);
+  assert.equal(draft.url, "");
+  await assert.rejects(
+    f.controller.handle({
+      type: "save",
+      id: draft.id,
+      values: { ...f.values(draft), title: "Manual idea" },
+    }),
+    /source link/,
+  );
+  assert.equal(
+    f.calls.filter((call) => call.path === "/extension/v1/capture").length,
+    0,
+  );
+  const known = fixture();
+  known.api.scripting.executeScript = async () => {
+    throw new Error("Denied");
+  };
+  assert.equal(
+    (await known.controller.handle({ type: "capture" })).url,
+    "https://example.org/article#reading",
+  );
+});
+test("manual drafts preserve entered links and notes without crossing tabs or accounts", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  f.hideTabMetadata();
+  f.api.scripting.executeScript = async () => {
+    throw new Error("Denied");
+  };
+  const draft = await f.controller.handle({ type: "capture" });
+  const edited = {
+    ...f.values(draft),
+    title: "Manual idea",
+    url: "https://example.org/typed",
+    notes: "Keep these notes",
+  };
+  await f.controller.handle({ type: "update", id: draft.id, values: edited });
+  const reopened = await f.controller.handle({ type: "capture" });
+  assert.equal(reopened.id, draft.id);
+  assert.equal(reopened.url, edited.url);
+  assert.equal(reopened.notes, edited.notes);
+  f.tab({ id: 8, title: "Other tab", url: "https://example.org/other" });
+  const other = await f.controller.handle({ type: "capture" });
+  assert.notEqual(other.id, draft.id);
+  assert.equal(other.title, "");
+  assert.equal(other.url, "");
+  assert.equal(other.notes, "");
+  f.switchAccount();
+  await f.controller.handle({ type: "status" });
+  await assert.rejects(f.controller.handle({ type: "draft", id: draft.id }));
+});
+test("reopening without page access preserves a frozen retry rather than replacing it", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  const draft = await f.controller.handle({ type: "capture" });
+  f.setCapture(async () => {
+    throw new Error("Lost response");
+  });
+  await assert.rejects(
+    f.controller.handle({
+      type: "save",
+      id: draft.id,
+      values: f.values(draft),
+    }),
+  );
+  const pending = await f.controller.handle({ type: "draft", id: draft.id });
+  f.hideTabMetadata();
+  f.api.scripting.executeScript = async () => {
+    throw new Error("Denied");
+  };
+  const reopened = await f.controller.handle({ type: "capture" });
+  assert.equal(reopened.id, draft.id);
+  assert.deepEqual(reopened.attempt, pending.attempt);
+});
+test("injected metadata rejects unsafe addresses and oversized selections", async () => {
+  for (const url of [
+    "file:///private",
+    "chrome://settings/",
+    "javascript:alert(1)",
+    "https://name:secret@example.org/",
+  ]) {
+    const f = fixture();
+    f.hideTabMetadata();
+    f.tab({ id: 7, title: "Untrusted metadata", url });
+    await assert.rejects(f.controller.handle({ type: "capture" }));
+    assert.deepEqual(f.store.captures, {});
+  }
+  const f = fixture();
+  f.hideTabMetadata();
+  f.selection("a".repeat(50001));
+  await assert.rejects(f.controller.handle({ type: "capture" }), /50,000/);
+});
+test("navigation between tab lookup and injection does not restore a different page's draft", async () => {
+  const f = fixture();
+  const old = await f.controller.handle({ type: "capture" });
+  f.api.scripting.executeScript = async () => [
+    {
+      result: {
+        url: "https://example.org/new-page",
+        title: "New page",
+        selectionText: "",
+      },
+    },
+  ];
+  const next = await f.controller.handle({ type: "capture" });
+  assert.notEqual(next.id, old.id);
+  assert.equal(next.url, "https://example.org/new-page");
+  assert.equal(next.title, "New page");
+});
+test("a blocked review preserves the draft and account ownership", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  f.api.tabs.create = async () => {
+    throw new Error("Tab blocked");
+  };
+  await assert.rejects(
+    f.controller.context(
+      { menuItemId: "drop-link", linkUrl: "https://target.example.org/" },
+      { id: 7, url: "https://example.org/" },
+    ),
+  );
+  const captures = f.store.captures as Record<
+    string,
+    { id: string; accountId: string }
+  >;
+  const draft = Object.values(captures)[0]!;
+  assert.equal(draft.accountId, f.account().id);
+  await f.api.storage.session.set({
+    connectionNotice: "Review could not open.",
+  });
+  assert.equal(
+    (await f.controller.handle({ type: "status" })).notice,
+    "Review could not open.",
+  );
+  assert.equal((await f.controller.handle({ type: "status" })).notice, "");
+  assert.equal(
+    (await f.controller.handle({ type: "draft", id: draft.id })).url,
+    "https://target.example.org/",
+  );
+  f.switchAccount();
+  await f.controller.handle({ type: "status" });
+  await assert.rejects(
+    f.controller.handle({ type: "draft", id: draft.id }),
+    /capture/i,
+  );
 });
 test("lost save responses freeze the exact request; worker restart and retry confirm the same saved drop", async () => {
   const f = fixture();
@@ -423,6 +725,7 @@ test("background bridge accepts only its own popup and registers user-invoked ca
   const f = fixture();
   const menuItems: Array<Record<string, unknown>> = [];
   let installed: () => void;
+  let clicked: (info: unknown, tab: unknown) => void;
   let listener: (
     message: unknown,
     sender: unknown,
@@ -461,7 +764,11 @@ test("background bridge accepts only its own popup and registers user-invoked ca
       create(value: Record<string, unknown>) {
         menuItems.push(value);
       },
-      onClicked: { addListener() {} },
+      onClicked: {
+        addListener(value: typeof clicked) {
+          clicked = value;
+        },
+      },
     },
   };
   try {
@@ -503,6 +810,36 @@ test("background bridge accepts only its own popup and registers user-invoked ca
         notice: "",
       },
     });
+    for (const info of [
+      {
+        menuItemId: "drop-selection",
+        selectionText: "Selected from native menu",
+        pageUrl: "https://example.org/",
+      },
+      { menuItemId: "drop-link", linkUrl: "https://target.example.org/" },
+    ]) {
+      clicked!(info, { id: 7, url: "https://example.org/" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const opened = f.tabs.at(-1) as { url: string };
+      assert.ok(
+        opened,
+        "The registered click listener must open a fallback tab",
+      );
+      const draftId = new URL(opened.url).searchParams.get("draft");
+      const data = await new Promise<{
+        ok: boolean;
+        data: { text: string; url: string };
+      }>((resolve) => {
+        listener!(
+          { type: "draft", id: draftId },
+          { id, url: opened.url },
+          resolve as (data: unknown) => void,
+        );
+      });
+      assert.equal(data.ok, true);
+      assert.equal(data.data.text, info.selectionText || "");
+      assert.equal(data.data.url, info.linkUrl || "https://example.org/");
+    }
   } finally {
     global.chrome = previous;
   }

@@ -1,5 +1,11 @@
 export function webUrl(value) {
-  if (typeof value !== "string" || value.length > 2048)
+  if (typeof value !== "string" || !value.trim())
+    throw new CaptureError(
+      "Open a website to capture a page or selected text.",
+      0,
+      "UNSUPPORTED_PAGE",
+    );
+  if (value.length > 2048)
     throw new Error("Use a web address of 2,048 characters or fewer.");
   let url;
   try {
@@ -7,6 +13,12 @@ export function webUrl(value) {
   } catch {
     throw new Error("Use a valid web address.");
   }
+  if (!["http:", "https:"].includes(url.protocol))
+    throw new CaptureError(
+      "Open a website to capture a page or selected text.",
+      0,
+      "UNSUPPORTED_PAGE",
+    );
   if (
     !["http:", "https:"].includes(url.protocol) ||
     url.username ||
@@ -53,6 +65,24 @@ export function makeCapture(info, tab, id = crypto.randomUUID()) {
   };
 }
 
+export function makeManualCapture(tab) {
+  return {
+    id: crypto.randomUUID(),
+    kind: "page",
+    tabId: tab.id,
+    pageUrl: "",
+    createdAt: Date.now(),
+    title: "",
+    url: "",
+    text: "",
+    summary: "",
+    category: "Uncategorized",
+    tags: "",
+    notes: "",
+    manual: true,
+  };
+}
+
 export function readValues(values) {
   if (!values || typeof values !== "object" || Array.isArray(values))
     throw new Error("Review the capture before saving.");
@@ -79,6 +109,7 @@ export function readValues(values) {
 export function savePayload(draft, input, allowDuplicate = false) {
   const values = readValues(input);
   if (!values.title.trim()) throw new Error("Add a title before saving.");
+  if (!values.url.trim()) throw new Error("Add a source link before saving.");
   const tags = [
     ...new Set(
       values.tags

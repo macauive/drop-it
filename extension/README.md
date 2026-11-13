@@ -4,6 +4,10 @@ A Manifest V3 companion for the existing Drop It library. The toolbar captures t
 
 Version 0.2 adds account-bound drafts and retries, **New capture / Discard draft**, existing pool/tag suggestions, an assigned-key display, and account-labelled connection/reconnect status. The suggested capture shortcut is **Command+Shift+Y** on macOS and **Ctrl+Shift+Y** elsewhere; assign or change it at `chrome://extensions/shortcuts` if Chrome reports a conflict.
 
+Version 0.2.7 uses a compact 380-pixel popup with Connect at the top, optional notes, and a pinned Save button. The extension name, toolbar tooltip, and popup title are **Drop It**. Right-click reviews open in normal extension tabs. Draft replacement/discard uses an HTML confirmation overlay with keyboard focus containment and Escape cancellation, without requiring browser-window or native-dialog support.
+
+Toolbar capture reads the last-focused tab's URL/title alongside selected text when metadata is unavailable. Reopening restores an owned draft before requesting renewed page access; title, text, source link, notes, and frozen retries remain intact. If a fresh capture cannot obtain a page address, an editable manual form opens and requires a valid source link before saving. Field-level input/change/blur handlers and popup lifecycle events persist changed values, skip identical snapshots, and surface storage errors. Permissions remain unchanged. After rebuilding, reload the installed extension on `chrome://extensions` and reconnect.
+
 ## Build and install locally
 
 From the repository root:
