@@ -69,6 +69,14 @@ const built = createApp(
     ? undefined
     : {
         async draft(context) {
+          if (process.env.DROP_IT_DRAFT_FAILURE === "1")
+            throw new AppError(429, "AI_LIMIT", "Synthetic provider unavailable.");
+          await new Promise((resolve) =>
+            setTimeout(
+              resolve,
+              process.env.DROP_IT_SLOW_DRAFT === "1" ? 5000 : 200,
+            ),
+          );
           return {
             title: context.page?.title || "Synthetic draft",
             summary: "Factual synthetic documentation summary.",

@@ -237,6 +237,45 @@ test("website and capture-only extension share retrieval with owner-bound snapsh
   const result = await ext.json();
   assert.ok(result.retrieval);
   assert.equal(result.draft.summary, "Factual synthetic summary");
+  const captured = await endpoint(tokens.access_token, {
+    accountId: owner,
+    source,
+    fetchPage: false,
+  });
+  assert.equal(captured.status, 200);
+  const capturedResult = await captured.json();
+  assert.equal(capturedResult.retrieval, undefined);
+  assert.equal(capturedResult.draft.summary, "Factual synthetic summary");
+  assert.equal(
+    (
+      await endpoint(tokens.access_token, {
+        accountId: other,
+        source,
+        fetchPage: false,
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await endpoint(tokens.access_token, {
+        accountId: owner,
+        source: { ...source, originalText: " " },
+        fetchPage: false,
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await endpoint(tokens.access_token, {
+        accountId: owner,
+        source,
+        fetchPage: "false",
+      })
+    ).status,
+    400,
+  );
   const website = await fetch(`${origin}/api/draft`, {
     method: "POST",
     headers: {

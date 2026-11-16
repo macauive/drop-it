@@ -259,7 +259,7 @@ export function applyDraftSuggestions(current, before, result) {
       .filter(Boolean)
       .join(" "),
   };
-  if (!result.retrieval) return next;
+  if (result.retrievalNotice || result.draftNotice) return next;
   for (const key of ["title", "summary", "category", "tags"]) {
     if (!current.editedFields?.includes(key) && current[key] === before[key])
       next[key] =

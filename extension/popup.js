@@ -18,33 +18,17 @@ let sourceTabId =
 let lastEdit = "",
   editError = false;
 let retrieving = false,
-  retrievalGeneration = 0;
-function renderRetrieval() {
-  renderContentStatus();
-  $("retrieve").textContent = retrieving
-    ? "Cancel retrieval"
-    : "Retrieve page & suggest fields";
-  $("retrieve").disabled =
-    busy || !draft || Boolean(draft.attempt) || Boolean(confirming);
-  $("page-snapshot").hidden = !draft?.retrieval;
-  $("retrieval-notice").textContent = draft?.retrievalNotice || "";
-  $("retrieval-notice").hidden = !draft?.retrievalNotice;
-  $("page-text").textContent = draft?.retrieval?.snapshot.text || "";
-  const page = draft?.retrieval?.snapshot;
-  $("page-provenance").textContent = page
-    ? `Retrieved ${page.capturedAt} via Firecrawl from ${page.finalUrl}${page.truncated ? " · Bounded excerpt" : ""}. Saved separately from captured text and the summary.`
-    : "";
-}
+  retrievalGeneration = 0,
+  preparation;
 function renderContentStatus() {
-  $("capture-content-status").textContent = draft?.retrieval
-    ? "Retrieved page snapshot ready. Review before saving."
-    : draft?.kind === "page"
-      ? $("text").value.trim()
-        ? `Page text ready${draft.pageTextTruncated ? " · bounded excerpt" : ""}. Review before saving.`
-        : "Link only: no readable page text was available. Retrieve the public page below or add text before saving."
-      : draft?.kind === "link"
-        ? "Link only. Retrieve the public page below to include its content."
-        : "Your selected text is preserved exactly.";
+  $("capture-content-status").textContent = retrieving
+    ? "Preparing your drop… filling the summary, pool and tags."
+    : draft?.preparationNotice ||
+      (draft?.kind === "selection"
+        ? "Your selected text is preserved exactly."
+        : $("text").value.trim()
+          ? `Page text ready${draft?.pageTextTruncated ? " · bounded excerpt" : ""}. Review before saving.`
+          : "No readable page text was available. You can add text or save the link.");
 }
 function notice(text = "") {
   $("message").textContent = text;
@@ -97,7 +81,7 @@ function clearDraft() {
   controls();
 }
 function controls() {
-  renderRetrieval();
+  renderContentStatus();
   for (const element of document.body.children)
     if (element.id !== "discard-confirm" && element.tagName !== "SCRIPT")
       element.inert = Boolean(confirming);
@@ -170,7 +154,7 @@ function showDraft(next) {
     $("preview-url").textContent = "Your current capture";
   }
   $("notes-details").open = Boolean(next.notes);
-  $("text-field").hidden = next.kind === "link";
+  $("text-field").hidden = false;
   $("text-label").textContent =
     next.kind === "selection" ? "Selected text" : "Page text";
   $("kind").textContent =
@@ -186,6 +170,7 @@ function showDraft(next) {
   else if (captureNotice(next)) notice(captureNotice(next));
   suggestTags();
   controls();
+  void prepareCapture();
 }
 function options(id, entries) {
   $(id).replaceChildren(
@@ -464,7 +449,7 @@ function persistDraft() {
   renderContentStatus();
   if (draft.retrieval && edited.url !== draft.retrieval.snapshot.requestedUrl) {
     draft.retrieval = undefined;
-    renderRetrieval();
+    renderContentStatus();
   }
   const snapshot = JSON.stringify([id, edited]);
   if (snapshot === lastEdit) return;
@@ -494,63 +479,62 @@ function persistDraft() {
   void writing.catch(() => {});
   suggestTags();
 }
-$("retrieve").addEventListener("click", async () => {
-  if (!draft || busy || confirming) return;
+function prepareCapture() {
+  if (
+    !draft ||
+    draft.saved ||
+    draft.attempt ||
+    !identity.connected ||
+    confirming
+  )
+    return Promise.resolve();
+  if (
+    preparation?.id === draft.id &&
+    preparation.generation === retrievalGeneration
+  )
+    return preparation.promise;
   const id = draft.id;
   const generation = ++retrievalGeneration;
-  if (retrieving) {
-    retrieving = false;
-    controls();
-    await call("cancel-retrieval", { id }).catch((error) =>
-      notice(error.message),
-    );
-    return;
-  }
   persistDraft();
   const before = values();
   retrieving = true;
   controls();
-  try {
-    await writing;
-    if (generation !== retrievalGeneration || draft?.id !== id) return;
-    const next = await call("retrieve", { id });
-    if (
-      generation !== retrievalGeneration ||
-      draft?.id !== id ||
-      !identity.connected
-    )
-      return;
-    // Preserve popup edits that have not reached the worker yet too.
-    const current = values();
-    draft = next;
-    if (current.url === before.url && current.text === before.text) {
-      for (const key of ["title", "summary", "category", "tags"])
-        if (current[key] === before[key]) $(key).value = next[key];
+  const pending = (async () => {
+    try {
+      await writing;
+      if (generation !== retrievalGeneration || draft?.id !== id) return;
+      const next = await call("prepare", { id });
+      if (
+        generation !== retrievalGeneration ||
+        draft?.id !== id ||
+        !identity.connected
+      )
+        return;
+      const current = values();
+      draft = next;
+      if (current.url === before.url && current.text === before.text) {
+        for (const key of ["title", "summary", "category", "tags", "text"])
+          if (current[key] === before[key]) $(key).value = next[key];
+      } else {
+        draft = { ...next, ...current, retrieval: undefined };
+      }
       lastEdit = "";
       persistDraft();
-    } else {
-      draft = { ...next, ...current, retrieval: undefined };
+    } catch {
+      if (generation === retrievalGeneration && draft?.id === id)
+        draft.preparationNotice =
+          "Suggestions are unavailable. Review and edit the captured details, then save.";
+    } finally {
+      if (preparation?.promise === pending) preparation = undefined;
+      if (generation === retrievalGeneration) {
+        retrieving = false;
+        controls();
+      }
     }
-    renderRetrieval();
-  } catch (error) {
-    if (generation === retrievalGeneration) notice(error.message);
-  } finally {
-    if (generation === retrievalGeneration) {
-      retrieving = false;
-      controls();
-    }
-  }
-});
-$("remove-snapshot").addEventListener("click", async () => {
-  if (!draft) return;
-  retrievalGeneration++;
-  retrieving = false;
-  draft.retrieval = undefined;
-  controls();
-  await call("cancel-retrieval", { id: draft.id, remove: true }).catch(
-    (error) => notice(error.message),
-  );
-});
+  })();
+  preparation = { id, generation, promise: pending };
+  return pending;
+}
 for (const key of keys) {
   // Listen at the field itself: some hosts do not bubble textarea edits.
   for (const name of ["input", "change", "blur"])
@@ -564,18 +548,22 @@ document.addEventListener("visibilitychange", () => {
 $("capture").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!draft || busy || !identity.connected || confirming) return;
-  retrievalGeneration++;
-  retrieving = false;
-  const edited = values(),
-    id = draft.id;
+  persistDraft();
+  const ready = prepareCapture();
+  const id = draft.id;
   busy = true;
   controls();
   notice();
   try {
-    await writing.catch(() => {});
+    await writing;
+    await ready;
+    // Source edits can invalidate a request already in flight. Prepare the
+    // latest source before freezing Save; completed captures are a local hit.
+    await prepareCapture();
+    if (draft?.id !== id || !identity.connected) return;
     const result = await call("save", {
       id,
-      values: edited,
+      values: values(),
       allowDuplicate: $("allow-duplicate").checked,
     });
     if (draft?.id === id) {

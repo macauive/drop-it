@@ -1334,3 +1334,216 @@ test("page suggestions preserve concurrent edits, original selection, cancellati
   release(result());
   await assert.rejects(disconnected);
 });
+
+test("automatic preparation suggests fields from captured text once and preserves them across worker restart", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  f.selection("Exact selected text — 漢字 <script>data</script>");
+  const draft = await f.controller.handle({ type: "capture" });
+  f.setDraft(async (init) => {
+    const input = JSON.parse(String(init.body));
+    assert.equal(input.fetchPage, false);
+    assert.equal(input.source.originalText, draft.text);
+    return response({
+      accountId: f.account().id,
+      draft: {
+        title: "Suggested title",
+        summary: "Useful summary",
+        category: "Reading",
+        tags: ["ideas"],
+      },
+    });
+  });
+  const ready = await f.controller.handle({ type: "prepare", id: draft.id });
+  assert.equal(ready.summary, "Useful summary");
+  assert.equal(ready.category, "Reading");
+  assert.equal(ready.tags, "ideas");
+  assert.equal(ready.text, draft.text);
+  assert.equal(ready.url, draft.url);
+  assert.equal(ready.retrieval, undefined);
+  const restarted = createController(f.api, origin, f.transport);
+  assert.equal(
+    (await restarted.handle({ type: "prepare", id: draft.id })).summary,
+    ready.summary,
+  );
+  assert.equal(f.calls.filter((c) => c.path.endsWith("/draft")).length, 1);
+});
+
+test("automatic link capture retrieves public text and metadata without changing a chosen source", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  const url = "https://example.org/linked#section";
+  await f.controller.context(
+    { menuItemId: "drop-link", linkUrl: url },
+    { id: 7, url: "https://example.org/parent" },
+  );
+  const draft = await f.controller.handle({
+    type: "draft",
+    id: new URL((f.tabs.at(-1) as { url: string }).url).searchParams.get(
+      "draft",
+    ),
+  });
+  const retrievalId = randomUUID();
+  f.setDraft(async (init) => {
+    assert.equal(JSON.parse(String(init.body)).fetchPage, true);
+    return response({
+      accountId: f.account().id,
+      draft: {
+        title: "Article",
+        summary: "Useful summary",
+        category: "Reading",
+        tags: ["article"],
+      },
+      retrieval: {
+        id: retrievalId,
+        snapshot: {
+          requestedUrl: url,
+          finalUrl: url.split("#")[0],
+          text: "Retrieved article text",
+          capturedAt: new Date().toISOString(),
+          provider: "firecrawl",
+          title: "Article",
+          description: "",
+          truncated: false,
+        },
+      },
+    });
+  });
+  const ready = await f.controller.handle({ type: "prepare", id: draft.id });
+  assert.equal(ready.text, "Retrieved article text");
+  assert.equal(ready.url, url);
+  assert.equal(ready.tags, "article");
+  assert.equal(
+    savePayload(ready, f.values(ready)).source.retrievalId,
+    retrievalId,
+  );
+  await f.controller.handle({ type: "prepare", id: draft.id });
+  assert.equal(f.calls.filter((c) => c.path.endsWith("/draft")).length, 1);
+});
+
+test("automatic preparation shares in-flight work and late metadata cannot overwrite edits", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  f.selection("Original passage");
+  const draft = await f.controller.handle({ type: "capture" });
+  let release: (response: Response) => void = () => {};
+  let started: () => void = () => {};
+  const begin = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  f.setDraft(async () => {
+    started();
+    return new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+  });
+  const one = f.controller.handle({ type: "prepare", id: draft.id });
+  const two = f.controller.handle({ type: "prepare", id: draft.id });
+  await begin;
+  await f.controller.handle({
+    type: "update",
+    id: draft.id,
+    values: {
+      ...f.values(draft),
+      title: "My title",
+      category: "Projects",
+      tags: "my-tag",
+      notes: "My exact note",
+    },
+  });
+  release(
+    response({
+      accountId: f.account().id,
+      draft: {
+        title: "Suggested title",
+        summary: "Useful summary",
+        category: "Reading",
+        tags: ["article"],
+      },
+    }),
+  );
+  const [ready, same] = await Promise.all([one, two]);
+  assert.equal(ready.id, same.id);
+  assert.equal(ready.title, "My title");
+  assert.equal(ready.category, "Projects");
+  assert.equal(ready.tags, "my-tag");
+  assert.equal(ready.notes, "My exact note");
+  assert.equal(ready.summary, "Useful summary");
+  assert.equal(ready.text, "Original passage");
+  assert.equal(f.calls.filter((c) => c.path.endsWith("/draft")).length, 1);
+});
+
+test("failed automatic suggestions retain captured content and allow saving without a new button or retry loop", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  f.selection("Keep this original text");
+  const draft = await f.controller.handle({ type: "capture" });
+  f.setDraft(async () =>
+    response({ code: "AI_FAILED", detail: "private provider detail" }, 503),
+  );
+  const ready = await f.controller.handle({ type: "prepare", id: draft.id });
+  assert.equal(ready.text, draft.text);
+  assert.match(ready.preparationNotice, /Suggestions are unavailable/);
+  assert.ok(!JSON.stringify(ready).includes("private provider detail"));
+  await f.controller.handle({ type: "prepare", id: draft.id });
+  assert.equal(f.calls.filter((c) => c.path.endsWith("/draft")).length, 1);
+  assert.ok(
+    (
+      await f.controller.handle({
+        type: "save",
+        id: draft.id,
+        values: f.values(ready),
+      })
+    ).saved,
+  );
+});
+
+test("automatic preparation invalidates changed text and late results cannot cross accounts", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  f.selection("Original text");
+  const draft = await f.controller.handle({ type: "capture" });
+  let release: (response: Response) => void = () => {};
+  let started: () => void = () => {};
+  let begin = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  f.setDraft(async () => {
+    started();
+    return new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+  });
+  const result = () =>
+    response({
+      accountId: draft.accountId,
+      draft: {
+        title: "Late title",
+        summary: "Late summary",
+        category: "Reading",
+        tags: ["late"],
+      },
+    });
+  const pending = f.controller.handle({ type: "prepare", id: draft.id });
+  await begin;
+  await f.controller.handle({
+    type: "update",
+    id: draft.id,
+    values: { ...f.values(draft), text: "Edited source text" },
+  });
+  release(result());
+  const changed = await pending;
+  assert.equal(changed.text, "Edited source text");
+  assert.equal(changed.summary, "");
+  assert.equal(changed.preparedRevision, undefined);
+  begin = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const stale = f.controller.handle({ type: "prepare", id: draft.id });
+  await begin;
+  f.switchAccount();
+  await f.controller.handle({ type: "connect" });
+  release(result());
+  await assert.rejects(stale);
+  await assert.rejects(f.controller.handle({ type: "draft", id: draft.id }));
+});

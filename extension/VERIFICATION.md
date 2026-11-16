@@ -1,5 +1,16 @@
 # Chrome extension verification
 
+## Version 0.2.10 automatic capture preparation — November 16, 2026
+
+The extension automatically fills the title, summary, pool and tags during capture review. It uses captured text when present, retrieving a public page automatically when only a link is available. The retrieval/suggestion button and separate snapshot controls are removed; retrieved text is available in the editable page-text field. Original selections, source links, notes and user-edited metadata are preserved. The website's explicit retrieval flow remains available.
+
+- `npm run check` passed lint, typecheck, production web build and **341 tests**, zero failures/skips. New controller tests cover text-based drafting without a duplicate fetch, automatic link retrieval, once-per-source preparation across worker restart, shared in-flight requests, concurrent edits, source invalidation, unavailable providers and account changes. HTTP tests cover the optional strict boolean `fetchPage`, required text when retrieval is disabled, owner isolation and compatibility with older extensions.
+- In-app browser checks used the shipped popup/controller and a disposable synthetic backend with deliberately slow drafting. Preparation started without another action. Editing the title and choosing Save during preparation preserved that title and saved the automatically filled summary, Reading pool and documentation tag. The library showed one created item.
+- A forced AI failure showed a concise notice while retaining the captured text and summary; ordinary Save still succeeded without a retry/suggestion button. A link-only capture automatically retrieved editable source text and populated metadata; reloading its review retained the completed fields. Untrusted HTML/source instructions remained literal textarea content.
+- Public extension build 0.2.10 passed. Permissions, OAuth scopes, source ownership checks, immutable save retries and database schema are unchanged. The backend accepts older clients' retrieval requests; the new extension should be installed after the backend update. Privacy/feature descriptions now disclose automatic extension preparation.
+
+Local review screenshot: `dist/automatic-review-0.2.10.jpg`. These are local browser/adapter checks; production/native verification follows release.
+
 ## Version 0.2.9 page-content capture — November 16, 2026
 
 Local release candidate: toolbar and page context captures now include bounded readable text and an editable source-derived summary by default. Selected passages remain exact; linked destinations require explicit retrieval. Page text is visible in review and saved as original source text. Hidden decoration, forms/editable fields, navigation and large symbol-only animation rows are excluded. Unavailable content is explicitly labelled link-only. No permissions, OAuth scopes, dependencies or database schema changes were added.

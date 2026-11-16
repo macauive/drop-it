@@ -19,6 +19,7 @@ export async function openReview(api, path) {
 export function createController(api, origin, transport = fetch) {
   const oauth = createOAuth(api, origin, transport);
   let queue = Promise.resolve();
+  const preparations = new Map();
   const serial = (task) => {
     const next = queue.then(task);
     queue = next.catch(() => {});
@@ -323,8 +324,14 @@ export function createController(api, origin, transport = fetch) {
               ),
             ]),
           ],
-          ...(values.url !== draft.url
-            ? { retrieval: undefined, retrievalToken: undefined }
+          ...(values.url !== draft.url || values.text !== draft.text
+            ? {
+                retrieval: undefined,
+                retrievalToken: undefined,
+                contentRevision: (draft.contentRevision || 0) + 1,
+                preparedRevision: undefined,
+                preparationNotice: undefined,
+              }
             : {}),
         });
       }
@@ -417,7 +424,22 @@ export function createController(api, origin, transport = fetch) {
   }
   return {
     handle(message) {
+      if (message?.type === "prepare") {
+        if (preparations.has(message.id)) return preparations.get(message.id);
+        const pending = retrieve({ ...message, automatic: true }).finally(
+          () => {
+            if (preparations.get(message.id) === pending)
+              preparations.delete(message.id);
+          },
+        );
+        preparations.set(message.id, pending);
+        return pending;
+      }
       if (message?.type === "retrieve") return retrieve(message);
+      if (message?.type === "save" && preparations.has(message.id))
+        return preparations
+          .get(message.id)
+          .then(() => serial(() => dispatch(message)));
       return serial(async () => {
         await initialize();
         return dispatch(message);
@@ -467,13 +489,20 @@ export function createController(api, origin, transport = fetch) {
     // Do not block edit/discard/disconnect mutations behind provider latency.
     const before = await serial(async () => {
       await initialize();
-      const identity = await verifyConnection();
       const draft = await get(message.id);
+      if (
+        message.automatic &&
+        (draft.saved ||
+          draft.attempt ||
+          draft.preparedRevision === (draft.contentRevision || 0))
+      )
+        return draft;
+      const identity = await verifyConnection();
       if (
         draft.accountId !== identity.account.id ||
         draft.saved ||
         draft.attempt ||
-        draft.retrievalToken
+        (draft.retrievalToken && !message.automatic)
       )
         throw new CaptureError(
           "This capture cannot retrieve a page right now.",
@@ -482,12 +511,20 @@ export function createController(api, origin, transport = fetch) {
       await put(next);
       return next;
     });
+    if (
+      message.automatic &&
+      (before.saved ||
+        before.attempt ||
+        before.preparedRevision === (before.contentRevision || 0))
+    )
+      return before;
     try {
       const result = await authenticated("/extension/v1/draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountId: before.accountId,
+          ...(message.automatic ? { fetchPage: !before.text.trim() } : {}),
           source: { url: before.url, originalText: before.text },
         }),
       });
@@ -495,9 +532,13 @@ export function createController(api, origin, transport = fetch) {
         result.accountId !== before.accountId ||
         !result.draft ||
         typeof result.draft.title !== "string" ||
+        result.draft.title.length > 200 ||
         typeof result.draft.summary !== "string" ||
+        result.draft.summary.length > 4000 ||
         typeof result.draft.category !== "string" ||
+        result.draft.category.length > 60 ||
         !Array.isArray(result.draft.tags) ||
+        result.draft.tags.length > 12 ||
         result.draft.tags.some(
           (tag) => typeof tag !== "string" || tag.length > 40,
         ) ||
@@ -518,8 +559,28 @@ export function createController(api, origin, transport = fetch) {
           current.attempt
         )
           return current;
+        const next = applyDraftSuggestions(current, before, result);
+        if (
+          message.automatic &&
+          current.url === before.url &&
+          current.text === before.text
+        ) {
+          // Retrieved text is extraction, never model-generated transcription.
+          // An explicit selection and edits to source text always win.
+          if (
+            current.kind !== "selection" &&
+            !current.text.trim() &&
+            result.retrieval
+          )
+            next.text = result.retrieval.snapshot.text;
+          next.preparedRevision = current.contentRevision || 0;
+          next.preparationNotice =
+            result.retrievalNotice || result.draftNotice
+              ? "Some details could not be filled automatically. Review and edit what was captured, then save."
+              : "";
+        }
         return put({
-          ...applyDraftSuggestions(current, before, result),
+          ...next,
           retrievalToken: undefined,
         });
       });
@@ -527,8 +588,19 @@ export function createController(api, origin, transport = fetch) {
       await serial(async () => {
         const current = await get(before.id).catch(() => undefined);
         if (current?.retrievalToken === before.retrievalToken)
-          await put({ ...current, retrievalToken: undefined });
+          await put({
+            ...current,
+            retrievalToken: undefined,
+            ...(message.automatic
+              ? {
+                  preparedRevision: before.contentRevision || 0,
+                  preparationNotice:
+                    "Suggestions are unavailable. Review and edit the captured details, then save.",
+                }
+              : {}),
+          });
       });
+      if (message.automatic) return serial(() => get(before.id));
       throw error;
     }
   }

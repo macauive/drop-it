@@ -157,14 +157,22 @@ export function addExtensionRoutes(
     });
   });
   router.post("/draft", express.json({ limit: "350kb" }), async (req, res) => {
-    const { accountId, source } = z
+    const { accountId, source, fetchPage } = z
       .object({
         accountId: idSchema,
+        fetchPage: z.boolean().default(true),
         source: z
           .object({ originalText: z.string().max(50000), url: urlSchema })
           .strict(),
       })
       .strict()
+      .refine(
+        ({ fetchPage, source }) =>
+          fetchPage || Boolean(source.originalText.trim()),
+        {
+          message: "Captured text is required when page retrieval is disabled.",
+        },
+      )
       .parse(req.body);
     if (accountId !== res.locals.owner)
       throw new AppError(
@@ -174,7 +182,7 @@ export function addExtensionRoutes(
       );
     const result = await library.draft(
       res.locals.owner,
-      draftSchema.parse({ source, fetchPage: true }),
+      draftSchema.parse({ source, fetchPage }),
     );
     res.json({ accountId, ...result });
   });
