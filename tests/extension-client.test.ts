@@ -296,6 +296,104 @@ test("restricted or unavailable source pages do not block connecting Drop It", a
     "A website",
   );
 });
+test("default toolbar page capture saves readable text and a source summary without provider retrieval", async () => {
+  const f = fixture();
+  await f.controller.handle({ type: "connect" });
+  const text =
+    "Practical AI consulting\nCustomer inquiries\nDocuments\nTeam knowledge\nDrop It\nAmountly";
+  f.api.scripting.executeScript = async () => [
+    {
+      result: {
+        url: "https://example.org/article#reading",
+        title: "A useful page",
+        selectionText: "",
+        text,
+        description: "Practical AI for small businesses.",
+        truncated: false,
+      },
+    },
+  ];
+  const draft = await f.controller.handle({ type: "capture" });
+  assert.equal(draft.kind, "page");
+  assert.equal(draft.text, text);
+  assert.equal(draft.summary, "Practical AI for small businesses.");
+  f.setCapture(async (init) => {
+    const payload = JSON.parse(String(init.body));
+    assert.equal(payload.source.originalText, text);
+    assert.equal(payload.summary, draft.summary);
+    assert.equal(payload.accountId, f.account().id);
+    return response({ id: randomUUID(), title: draft.title });
+  });
+  await f.controller.handle({
+    type: "save",
+    id: draft.id,
+    values: f.values(draft),
+  });
+  assert.equal(
+    f.calls.some((call) => call.path === "/extension/v1/draft"),
+    false,
+  );
+});
+test("page context capture reads only the clicked frame and rejects content after navigation", async () => {
+  const f = fixture();
+  const url = "https://example.org/frame#services";
+  let navigated = false;
+  f.api.scripting.executeScript = async (options?: unknown) => {
+    assert.deepEqual(options, {
+      target: { tabId: 7, frameIds: [2] },
+      func: (
+        await import(new URL("../extension/read-page.js", import.meta.url).href)
+      ).readPageDocument,
+      args: ["page"],
+    });
+    return [
+      {
+        result: {
+          url: navigated ? "https://other.example.org/" : url,
+          title: "Frame",
+          selectionText: "",
+          text: "Owned clicked-page content",
+          truncated: true,
+        },
+      },
+    ];
+  };
+  for (const stale of [false, true]) {
+    navigated = stale;
+    await f.controller.context(
+      { menuItemId: "drop-page", frameId: 2, frameUrl: url },
+      { id: 7, url: "https://example.org/" },
+    );
+    const opened = f.tabs.at(-1) as { url: string };
+    const draft = await f.controller.handle({
+      type: "draft",
+      id: new URL(opened.url).searchParams.get("draft"),
+    });
+    assert.equal(draft.url, url);
+    assert.equal(draft.text, stale ? "" : "Owned clicked-page content");
+    assert.equal(draft.pageTextTruncated, !stale);
+  }
+});
+test("page capture bounds text, reports unavailable content and does not use a different URL's text", () => {
+  const tab = { id: 7, url: "https://example.org/" };
+  assert.equal(
+    makeCapture({ page: { url: tab.url, text: "Readable page text" } }, tab)
+      .summary,
+    "Readable page text",
+  );
+  assert.equal(
+    makeCapture(
+      { page: { url: "https://other.example.org/", text: "Wrong page" } },
+      tab,
+    ).text,
+    "",
+  );
+  assert.equal(makeCapture({}, tab).text, "");
+  assert.throws(
+    () => makeCapture({ page: { url: tab.url, text: "x".repeat(50001) } }, tab),
+    /50,000/,
+  );
+});
 test("capture validation constrains URLs, pool names, tag count and unexpected fields", () => {
   const f = fixture();
   const draft = makeCapture(

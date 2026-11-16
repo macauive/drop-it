@@ -7,6 +7,7 @@ import {
   preflightPage,
 } from "../server/page-extraction.js";
 import { pageSnapshotSchema } from "../shared/page.js";
+import { cleanPageMarkdown } from "../server/page-text.js";
 
 test("page destinations reject private, signed, credential-bearing and sensitive links", () => {
   for (const url of [
@@ -163,6 +164,12 @@ test("Firecrawl uses fixed server API, no destination credentials, bounded data 
       assert.equal(payload.maxAge, 0);
       assert.equal(payload.storeInCache, false);
       assert.equal(payload.timeout, 10000);
+      assert.deepEqual(payload.excludeTags, [
+        "[aria-hidden='true']",
+        "[hidden]",
+        "svg",
+        "canvas",
+      ]);
       return Response.json(body({ markdown: "a".repeat(30001) }));
     },
     async () => new URL("https://example.org/docs"),
@@ -186,6 +193,29 @@ test("Firecrawl uses fixed server API, no destination credentials, bounded data 
       .success,
     false,
   );
+});
+test("decorative animation is removed before snapshot limits without discarding later services or code", async () => {
+  const animation = Array.from({ length: 500 }, () =>
+    "  ·  +  :   ".repeat(20),
+  ).join("\n");
+  const content =
+    "## Customer inquiries\nSort requests and prepare replies.\n## Documents\nPull details from invoices.\n## Team knowledge\nFind answers with sources.\n## Drop It\nA personal library.\n## Amountly\nAn accounting workspace.";
+  const code = "```js\nconst answer = 2 + 2;\n```";
+  const extractor = new FirecrawlExtractor(
+    "synthetic",
+    async () =>
+      Response.json(
+        body({
+          markdown: `# Practical AI\n\n\`\`\`\n${animation}\n\`\`\`\n\n${content}\n\n${code}`,
+        }),
+      ),
+    async () => new URL("https://example.org/docs"),
+  );
+  const snapshot = await extractor.extract("https://example.org/docs#services");
+  assert.ok(snapshot.text.includes(content));
+  assert.ok(snapshot.text.includes(code));
+  assert.ok(!snapshot.text.includes("·"));
+  assert.equal(snapshot.truncated, false);
 });
 test("provider quota, malformed/oversized output, unsafe redirect and transport failures fail safely", async () => {
   const responses = [
@@ -238,4 +268,29 @@ test("provider quota, malformed/oversized output, unsafe redirect and transport 
     ).extract("https://example.org/docs"),
     { code: "PAGE_FAILED" },
   );
+});
+
+test("page cleaning preserves technical text, languages, tables, short diagrams and fenced source", () => {
+  const text = [
+    "# 日本語 café العربية",
+    "```python\n# Symbols can be source, not decoration\n" +
+      "*".repeat(100) +
+      "\n```",
+    "~~~text\nshort -> diagram\n~~~",
+    "| Column A | Column B |\n|" +
+      "-".repeat(50) +
+      "|" +
+      "-".repeat(50) +
+      "|\n| 1 | 2 |",
+    "-".repeat(80),
+    "```\nconst value = '<untrusted>';\n\n\nconst second = 2;\n```",
+    "```unclosed\nkeep this content",
+  ].join("\n\n");
+  assert.equal(cleanPageMarkdown(text), text);
+});
+
+test("large unlabeled/text art blocks and loose braille rows are filtered without broken fences", () => {
+  const art = " · + : . ".repeat(30);
+  const text = `Before\n\n\`\`\`text\n${art}\n${art}\n\`\`\`\n\n${"⠿⢸⡇ ".repeat(40)}\n\nAfter`;
+  assert.equal(cleanPageMarkdown(text), "Before\n\nAfter");
 });

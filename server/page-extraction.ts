@@ -5,6 +5,7 @@ import { BlockList, isIP } from "node:net";
 import { z } from "zod";
 import { pageSnapshotSchema, type PageSnapshot } from "../shared/page.js";
 import { AppError } from "./errors.js";
+import { cleanPageMarkdown } from "./page-text.js";
 
 export interface PageExtractor {
   extract(url: string): Promise<PageSnapshot>;
@@ -222,6 +223,7 @@ export class FirecrawlExtractor implements PageExtractor {
             formats: ["markdown"],
             onlyMainContent: true,
             onlyCleanContent: false,
+            excludeTags: ["[aria-hidden='true']", "[hidden]", "svg", "canvas"],
             parsers: [],
             timeout: 10000,
             maxAge: 0,
@@ -287,6 +289,8 @@ export class FirecrawlExtractor implements PageExtractor {
         )
       )
         throw unavailable();
+      // Clean before either snapshot or AI excerpt limits are applied.
+      const text = cleanPageMarkdown(data.markdown);
       return pageSnapshotSchema.parse({
         provider: "firecrawl",
         requestedUrl: value,
@@ -294,8 +298,8 @@ export class FirecrawlExtractor implements PageExtractor {
         capturedAt: new Date().toISOString(),
         title: (data.metadata.title ?? "").slice(0, 200),
         description: (data.metadata.description ?? "").slice(0, 2000),
-        text: data.markdown.slice(0, 30000),
-        truncated: data.markdown.length > 30000,
+        text: text.slice(0, 30000),
+        truncated: text.length > 30000,
       });
     } catch (error) {
       if (error instanceof AppError) throw error;

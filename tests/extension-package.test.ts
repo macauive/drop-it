@@ -67,6 +67,7 @@ test("extension packaging includes only reviewed browser assets and one service 
         "background.js",
         "controller.js",
         "capture.js",
+        "read-page.js",
         "oauth.js",
         "popup.js",
         "popup.html",

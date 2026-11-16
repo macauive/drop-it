@@ -74,7 +74,7 @@
           required
         />
         <div id="text-field" hidden>
-          <label for="text">Selected text</label
+          <label id="text-label" for="text">Selected text</label
           ><textarea
             id="text"
             name="text"
@@ -82,6 +82,7 @@
             rows="3"
           ></textarea>
         </div>
+        <p id="capture-content-status" class="field-help" role="status"></p>
         <div class="row">
           <div>
             <label for="category">Pool</label
@@ -138,7 +139,7 @@
           </details>
         </section>
         <label for="summary"
-          >Summary <span class="optional">AI suggestion · editable</span></label
+          >Summary <span class="optional">editable</span></label
         ><textarea
           id="summary"
           name="summary"

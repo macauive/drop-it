@@ -2,7 +2,7 @@
 
 A private saved-for-later library with a React interface and a ChatGPT-compatible MCP server. Save screenshots, text and links; search them later; preserve the source while editing summaries and notes.
 
-The [Chrome extension](extension/README.md) captures pages, selected text, and links into the same library. Run `npm run build:extension` for the unpacked folder and ZIP; deployment and the exact OAuth callback allowlist must be configured before live use.
+The [Chrome extension](extension/README.md) captures readable page text by default, or exact selected text and links, into the same library. Page capture includes an editable source-derived summary without a provider request; optional retrieval adds a separate snapshot and AI suggestions. Run `npm run build:extension` for the unpacked folder and ZIP; deployment and the exact OAuth callback allowlist must be configured before live use.
 
 ## Run locally
 

@@ -226,7 +226,17 @@ const api = {
       if (!tab.url.startsWith("http")) throw new Error("Restricted page");
       return [
         {
-          result: { url: tab.url, title: tab.title, selectionText: selection },
+          result: {
+            url: tab.url,
+            title: tab.title,
+            selectionText: selection,
+            text: selection
+              ? ""
+              : "Practical AI consulting\nCustomer inquiries\nSort requests and prepare replies.\nDocuments\nPull useful details from invoices.\nTeam knowledge\nFind answers with sources.\nDrop It\nA personal library.\nAmountly\nAn accounting workspace.",
+            description:
+              "Practical AI consulting, web design, and useful everyday software.",
+            truncated: false,
+          },
         },
       ];
     },
@@ -290,6 +300,7 @@ const assets = new Set([
   "popup.html",
   "popup.js",
   "popup.css",
+  "read-page.js",
   "icons/16.png",
   "icons/32.png",
   "icons/48.png",
@@ -300,6 +311,44 @@ server.on("request", async (req, res) => {
     const path = new URL(req.url!, origin).pathname;
     if (path.startsWith("/preview/") || assets.has(path.slice(1))) {
       res.setHeader("Cache-Control", "no-store");
+      if (path === "/preview/page-reader") {
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.end(`<!doctype html><meta charset="utf-8"><title>Page reader verification</title>
+          <meta name="description" content="Useful source description.">
+          <style>.hidden-by-style{display:none}</style>
+          <nav>NavigationNoise</nav><main>
+          <h1>Useful page title</h1>
+          <pre aria-hidden="true">${"hidden-art ".repeat(10000)}</pre>
+          <pre>${(" · + : . ".repeat(30) + "\n").repeat(500)}</pre>
+          <p hidden>HiddenNoise</p><p class="hidden-by-style">StyleNoise</p>
+          <p aria-hidden="true">AriaNoise</p><p inert>InertNoise</p>
+          <form><input value="InputNoise"><textarea>TextareaNoise</textarea></form>
+          <div contenteditable="true">EditorNoise</div>
+          <h2>Customer inquiries</h2><p>Sort requests and prepare replies.</p>
+          <h2>Documents</h2><p>Pull useful details from invoices.</p>
+          <h2>Team knowledge</h2><p>Find answers with sources.</p>
+          <h2>Drop It</h2><p>A personal library.</p>
+          <h2>Amountly</h2><p>An accounting workspace.</p>
+          <pre><code><span>const </span><span>answer</span><span> = 2 + 2;</span>\n${"*".repeat(100)}\n<span>  console</span><span>.log(answer);</span></code></pre><p>日本語 café العربية</p>
+          <p id="selection-test">Exact selection — · + 漢字 🌱</p>
+          <p id="long-content"></p></main><div style="display:none"><main>HiddenMainNoise</main></div><footer>FooterNoise</footer>
+          <pre id="result">Checking reader…</pre>
+          <script type="module">
+          import { readPageDocument } from '/read-page.js';
+          const params = new URLSearchParams(location.search);
+          if(params.has('long'))document.getElementById('long-content').textContent='Readable long page. '.repeat(4000);
+          if(params.has('selection')){const range=document.createRange();range.selectNodeContents(document.getElementById('selection-test'));window.getSelection().addRange(range);}
+          const result=readPageDocument();
+          const forcedPage=readPageDocument('page');
+          const selected=params.has('selection');
+          const passed=selected
+            ? result.selectionText==='Exact selection — · + 漢字 🌱' && !result.text && forcedPage.text.includes('Amountly')
+            : result.text.includes('Amountly') && result.text.includes('const answer = 2 + 2;') && result.text.includes('  console.log(answer);') && result.text.includes('日本語 café العربية') && !/Noise|hidden-art/.test(result.text) && !result.text.includes(' · + : . ') && result.text.length<=50000 && result.truncated===params.has('long');
+          for(const main of document.querySelectorAll('main'))main.hidden=true;
+          document.getElementById('result').textContent=JSON.stringify({passed,...result,text:result.text?.slice(0,1200),characters:result.text?.length},null,2);
+          </script>`);
+        return;
+      }
       if (path === "/preview/events") {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         res.write(": ready\n\n");

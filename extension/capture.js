@@ -40,9 +40,16 @@ export function makeCapture(info, tab, id = crypto.randomUUID()) {
   const url = webUrl(
     kind === "link" ? info.linkUrl : info.frameUrl || info.pageUrl || tab?.url,
   );
-  const text = kind === "selection" ? info.selectionText : "";
+  const page =
+    kind === "page" && info.page?.url === url ? info.page : undefined;
+  const text =
+    kind === "selection"
+      ? info.selectionText
+      : typeof page?.text === "string"
+        ? page.text
+        : "";
   if (typeof text !== "string" || text.length > 50000)
-    throw new Error("Select up to 50,000 characters, then try again.");
+    throw new Error("Use up to 50,000 characters, then try again.");
   const title =
     kind === "link"
       ? new URL(url).hostname
@@ -58,7 +65,17 @@ export function makeCapture(info, tab, id = crypto.randomUUID()) {
     title: (title || new URL(url).hostname).slice(0, 200),
     url,
     text,
-    summary: "",
+    summary:
+      kind === "page" && text
+        ? (typeof page?.description === "string" && page.description.trim()
+            ? page.description
+            : text
+          )
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 500)
+        : "",
+    ...(kind === "page" ? { pageTextTruncated: page?.truncated === true } : {}),
     category: "Uncategorized",
     tags: "",
     notes: "",

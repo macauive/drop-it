@@ -20,6 +20,7 @@ let lastEdit = "",
 let retrieving = false,
   retrievalGeneration = 0;
 function renderRetrieval() {
+  renderContentStatus();
   $("retrieve").textContent = retrieving
     ? "Cancel retrieval"
     : "Retrieve page & suggest fields";
@@ -31,8 +32,19 @@ function renderRetrieval() {
   $("page-text").textContent = draft?.retrieval?.snapshot.text || "";
   const page = draft?.retrieval?.snapshot;
   $("page-provenance").textContent = page
-    ? `Retrieved ${page.capturedAt} via Firecrawl from ${page.finalUrl}${page.truncated ? " · Bounded excerpt" : ""}. Saved separately from selected text and the AI summary.`
+    ? `Retrieved ${page.capturedAt} via Firecrawl from ${page.finalUrl}${page.truncated ? " · Bounded excerpt" : ""}. Saved separately from captured text and the summary.`
     : "";
+}
+function renderContentStatus() {
+  $("capture-content-status").textContent = draft?.retrieval
+    ? "Retrieved page snapshot ready. Review before saving."
+    : draft?.kind === "page"
+      ? $("text").value.trim()
+        ? `Page text ready${draft.pageTextTruncated ? " · bounded excerpt" : ""}. Review before saving.`
+        : "Link only: no readable page text was available. Retrieve the public page below or add text before saving."
+      : draft?.kind === "link"
+        ? "Link only. Retrieve the public page below to include its content."
+        : "Your selected text is preserved exactly.";
 }
 function notice(text = "") {
   $("message").textContent = text;
@@ -158,7 +170,9 @@ function showDraft(next) {
     $("preview-url").textContent = "Your current capture";
   }
   $("notes-details").open = Boolean(next.notes);
-  $("text-field").hidden = next.kind !== "selection";
+  $("text-field").hidden = next.kind === "link";
+  $("text-label").textContent =
+    next.kind === "selection" ? "Selected text" : "Page text";
   $("kind").textContent =
     { page: "PAGE", selection: "SELECTED TEXT", link: "LINK" }[next.kind] ||
     "CAPTURE";
@@ -447,6 +461,7 @@ function persistDraft() {
   if (!draft || draft.saved || draft.attempt || busy || confirming) return;
   const edited = values(),
     id = draft.id;
+  renderContentStatus();
   if (draft.retrieval && edited.url !== draft.retrieval.snapshot.requestedUrl) {
     draft.retrieval = undefined;
     renderRetrieval();

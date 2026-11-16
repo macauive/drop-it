@@ -1,5 +1,27 @@
 # Chrome extension verification
 
+## Version 0.2.9 page-content capture — November 16, 2026
+
+Local release candidate: toolbar and page context captures now include bounded readable text and an editable source-derived summary by default. Selected passages remain exact; linked destinations require explicit retrieval. Page text is visible in review and saved as original source text. Hidden decoration, forms/editable fields, navigation and large symbol-only animation rows are excluded. Unavailable content is explicitly labelled link-only. No permissions, OAuth scopes, dependencies or database schema changes were added.
+
+- The in-app browser exercised the shipped reader on synthetic DOM fixtures with more than 100,000 characters of decoration, CSS/ARIA-hidden content, a hidden main ancestor, form/editable fields, source code and multilingual prose. Useful later sections remained, code was preserved, hidden/form data was excluded, 50,000-character truncation was explicit, and selected text remained exact (including symbols and Unicode). Explicit page mode also read page content when a selection existed.
+- The shipped popup/controller with the loopback Chrome API adapter produced page text and a summary before retrieval. Ordinary **Save drop** succeeded; website detail exposed the same original text and source-derived summary. The final popup/save check was repeated after review refinements. This is adapter/browser evidence, not a native installed-extension test.
+- The updated production extractor, running locally with the existing server-side credential, retrieved `https://macdigital.ai/#services`: **3,082 characters**, no truncation, zero decorative rows, and all five checked sections present: Customer inquiries, Documents, Team knowledge, Drop It and Amountly. No production drop was created or modified.
+- Final `npm run check` passed lint, typecheck, production web build and **336 tests**, with zero failures or skips. Regression coverage includes original-text saving without provider retrieval, frame scoping, navigation mismatch rejection, payload bounds, preserved code/Markdown/languages, and filtering before snapshot limits. `npm run build:extension` passed; the allowlisted public extension package now includes `read-page.js`, with unchanged permissions and identity.
+
+Local screenshots: `dist/page-capture-review-0.2.9.jpg` and `dist/page-capture-saved-0.2.9.jpg` (synthetic account/content only). No store submission or website SEO changes were made.
+
+### Native Brave release checks — November 16, 2026
+
+Ran 0.2.9 through Brave's real extension APIs and identity window using a new disposable loopback account/database, with the existing public extension identity. The installed unpacked assets were backed up before the test and restored afterward to production 0.2.9 assets. The installed folder retains its existing `drop-it-chrome-0.2.8` name, while the loaded manifest is 0.2.9. The public ZIP and `dist/drop-it-chrome-0.2.9` target only `https://dontdropit.app`.
+
+- Toolbar capture of Mac Digital saved readable text and its source-derived summary without retrieval. Native **Open drop** and original-source read-back retained the service/product content without ASCII decoration.
+- Native right-click selected-text capture preserved the chosen sentence. Duplicate review required an explicit **Save another drop from this source** before saving. Native right-click page capture populated the full readable page text and summary. Right-click **Save link to Drop It** captured the Amountly destination, explicitly labelled it link-only, and saved without text from the parent page.
+- A documentation capture exposed syntax-highlighted code fragments being separated by inserted newlines. The reader now joins fragments from the same code element with their original whitespace. The native retest retained the curl example's arguments, continuation characters and indentation. The DOM fixture now also checks highlighted spans and indentation.
+- Edited a documentation draft's title, tag and note, closed the popup, and observed **service worker (Inactive)**. Reopening while the disposable service was offline reported that the draft was preserved. Reconnecting restored the edited fields, captured page text and formatted code.
+- Took only the disposable listener offline while the connected popup remained open. **Save drop** failed safely at its connection check. Closed/reopened, restored the listener and saved successfully. Native read-back retained the exact note, tag, URL fragment and code. Searching for the unique test tag showed **1 - 1 of 1**. This tests service unavailability; committed-response loss remains automated coverage.
+- Final `npm run check` after the code-whitespace fix passed lint, typecheck, production build and **336 tests**, zero failures/skips. The public extension build passed. Local evidence: `dist/native-default-page-0.2.9.png` and `dist/native-offline-retry-0.2.9.png`. No production library data was changed by these native checks. The disposable backend was stopped and its temporary data/sign-in file removed.
+
 ## Version 0.2.8 release preparation — November 13, 2026
 
 Version 0.2.8 packages the Firecrawl capture update for the public service. The native evidence below was collected immediately before the version bump; no extension runtime code changed during release preparation. Permissions and the stable OAuth callback are unchanged. Reloading or updating clears browser-session drafts, so finish pending captures first.

@@ -37,6 +37,7 @@ const files = [
   "background.js",
   "controller.js",
   "capture.js",
+  "read-page.js",
   "oauth.js",
   "popup.js",
   "popup.html",

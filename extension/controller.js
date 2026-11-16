@@ -8,6 +8,7 @@ import {
   applyDraftSuggestions,
 } from "./capture.js";
 import { createOAuth } from "./oauth.js";
+import { readPageDocument } from "./read-page.js";
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export async function openReview(api, path) {
@@ -199,27 +200,18 @@ export function createController(api, origin, transport = fetch) {
     // the preserved source explicit rather than pretending it is today's page.
     if (!fresh && pending && (pending.manual || !tab.url))
       return { ...pending, resumed: true };
-    let selectionText = "";
+    let page;
     try {
       const [injection] = await api.scripting.executeScript({
         target: { tabId: tab.id },
-        func: () => ({
-          url: window.location.href,
-          title: document.title.slice(0, 200),
-          selectionText: (window.getSelection()?.toString() || "").slice(
-            0,
-            50001,
-          ),
-        }),
+        func: readPageDocument,
       });
-      const page = injection?.result;
+      page = injection?.result;
       // activeTab can permit injection while a browser host omits Tab.url.
       // Read metadata only from this user-invoked tab, never another open tab.
       if (typeof page?.url === "string") tab = { ...tab, url: page.url };
       if (typeof page?.title === "string")
         tab = { ...tab, title: page.title.slice(0, 200) };
-      if (typeof page?.selectionText === "string")
-        selectionText = page.selectionText;
     } catch {
       /* A known page URL still permits URL-only capture if injection is denied. */
     }
@@ -227,7 +219,7 @@ export function createController(api, origin, transport = fetch) {
       return { ...pending, resumed: true };
     return put({
       ...(tab.url
-        ? makeCapture({ selectionText }, tab)
+        ? makeCapture({ selectionText: page?.selectionText, page }, tab)
         : makeManualCapture(tab)),
       toolbar: true,
       accountId: activeAccount?.id ?? null,
@@ -436,8 +428,31 @@ export function createController(api, origin, transport = fetch) {
         await initialize();
         const { activeAccount } =
           await api.storage.session.get("activeAccount");
+        let page;
+        if (info.menuItemId === "drop-page" && Number.isInteger(tab?.id)) {
+          try {
+            const [injection] = await api.scripting.executeScript({
+              target: {
+                tabId: tab.id,
+                ...(Number.isInteger(info.frameId)
+                  ? { frameIds: [info.frameId] }
+                  : {}),
+              },
+              func: readPageDocument,
+              args: ["page"],
+            });
+            // Do not attach a newly navigated tab/frame to the clicked URL.
+            if (
+              injection?.result?.url ===
+              (info.frameUrl || info.pageUrl || tab.url)
+            )
+              page = injection.result;
+          } catch {
+            /* The review explicitly reports link-only fallback. */
+          }
+        }
         const draft = await put({
-          ...makeCapture(info, tab),
+          ...makeCapture({ ...info, page }, tab),
           accountId: activeAccount?.id ?? null,
         });
         await openReview(
