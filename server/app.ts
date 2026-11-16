@@ -6,6 +6,7 @@ import express, {
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import { DatabaseRateLimitStore } from "./rate-limit-store.js";
 import { ChatGPT } from "./chatgpt.js";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -163,12 +164,25 @@ export function createApp(
       resourceServerUrl: new URL(auth.resource),
       scopesSupported: ["library:read", "library:write", "capture:write"],
       resourceName: "Drop It",
+      authorizationOptions: {
+        rateLimit: { store: new DatabaseRateLimitStore(db, "oauth-authorize") },
+      },
+      tokenOptions: {
+        rateLimit: { store: new DatabaseRateLimitStore(db, "oauth-token") },
+      },
+      clientRegistrationOptions: {
+        rateLimit: { store: new DatabaseRateLimitStore(db, "oauth-register") },
+      },
+      revocationOptions: {
+        rateLimit: { store: new DatabaseRateLimitStore(db, "oauth-revoke") },
+      },
     }),
   );
   addExtensionRoutes(app, auth, library, config);
   app.use(
     "/api",
     rateLimit({
+      store: new DatabaseRateLimitStore(db, "api"),
       windowMs: 60000,
       limit: 120,
       standardHeaders: "draft-7",
@@ -193,6 +207,7 @@ export function createApp(
       : jsonBody(req, res, next),
   );
   const loginLimiter = rateLimit({
+    store: new DatabaseRateLimitStore(db, "login"),
     windowMs: 15 * 60000,
     limit: 10,
     standardHeaders: "draft-7",
@@ -212,6 +227,7 @@ export function createApp(
     .object({ currentPassword: currentPasswordSchema })
     .strict();
   const reauthLimiter = rateLimit({
+    store: new DatabaseRateLimitStore(db, "reauth"),
     windowMs: 15 * 60000,
     limit: 10,
     keyGenerator: (_req, res) => res.locals.owner,
@@ -670,11 +686,12 @@ export function createApp(
       }),
     );
   });
-  // Keep one legacy export active through both its snapshot work and response.
-  let exportActive = false;
+  // Retain owner slots through both snapshot work and response completion.
+  const activeExportOwners = new Set<string>();
   app.get(
     "/api/export",
     rateLimit({
+      store: new DatabaseRateLimitStore(db, "legacy-export"),
       windowMs: 60000,
       limit: 5,
       keyGenerator: (_req, res) => String(res.locals.owner),
@@ -683,13 +700,20 @@ export function createApp(
       message: { error: "Too many exports. Please wait a minute." },
     }),
     async (_req, res, next) => {
-      if (exportActive)
+      const owner = String(res.locals.owner);
+      if (activeExportOwners.has(owner))
         throw new AppError(
           429,
           "EXPORT_BUSY",
-          "An export is already running. Try again shortly.",
+          "Your export is already running. Try again shortly.",
         );
-      exportActive = true;
+      if (activeExportOwners.size >= 2)
+        throw new AppError(
+          429,
+          "EXPORT_CAPACITY",
+          "The export service is busy. Try again shortly.",
+        );
+      activeExportOwners.add(owner);
       const controller = new AbortController();
       const deadline = setTimeout(() => {
         controller.abort();
@@ -700,7 +724,7 @@ export function createApp(
       let responseComplete = false;
       const release = () => {
         if (!buildComplete || !responseComplete) return;
-        exportActive = false;
+        activeExportOwners.delete(owner);
         res.off("finish", responseEnded);
         res.off("close", responseEnded);
       };
@@ -742,6 +766,7 @@ export function createApp(
   app.post(
     "/mcp",
     rateLimit({
+      store: new DatabaseRateLimitStore(db, "mcp"),
       windowMs: 60000,
       limit: 120,
       standardHeaders: "draft-7",

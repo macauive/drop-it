@@ -398,4 +398,22 @@ export async function migrate(db: Database) {
     );
     await tx.query("INSERT INTO schema_migrations(version) VALUES(13)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=14"))
+        .rows.length
+    )
+      return;
+    await tx.query(`CREATE TABLE rate_limit_counters (
+      key text NOT NULL, window_start timestamptz NOT NULL,
+      hits integer NOT NULL CHECK(hits>=0), PRIMARY KEY(key,window_start)
+    )`);
+    await tx.query(
+      "CREATE INDEX rate_limit_counters_window ON rate_limit_counters(window_start)",
+    );
+    await tx.query(
+      "ALTER TABLE oauth_clients ADD COLUMN last_used_at timestamptz NOT NULL DEFAULT clock_timestamp()",
+    );
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(14)");
+  });
 }

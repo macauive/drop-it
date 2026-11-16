@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
+import { imageDecodeOptions, withImageDecode } from "./image-decode.js";
 import type { Database, Queryable } from "./db.js";
 import {
   saveSchema,
@@ -365,18 +366,19 @@ export class Library {
           if (!rows[0])
             throw new AppError(404, "NOT_FOUND", "Attachment unavailable.");
           if (isImageMime(rows[0].mime)) {
-            const preview = await sharp(Buffer.from(rows[0].bytes), {
-              limitInputPixels: 25_000_000,
-            })
-              .rotate()
-              .resize({
-                width: 1536,
-                height: 1536,
-                fit: "inside",
-                withoutEnlargement: true,
-              })
-              .jpeg({ quality: 85 })
-              .toBuffer();
+            const preview = await withImageDecode(() =>
+              sharp(Buffer.from(rows[0].bytes), imageDecodeOptions)
+                .rotate()
+                .resize({
+                  width: 1536,
+                  height: 1536,
+                  fit: "inside",
+                  withoutEnlargement: true,
+                })
+                .jpeg({ quality: 85 })
+                .timeout({ seconds: 5 })
+                .toBuffer(),
+            );
             image = `data:image/jpeg;base64,${preview.toString("base64")}`;
           } else if (rows[0].mime === "application/pdf") {
             pdf = {

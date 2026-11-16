@@ -1,5 +1,6 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
+import { DatabaseRateLimitStore } from "./rate-limit-store.js";
 import { z } from "zod";
 import type { Auth } from "./auth.js";
 import type { Library } from "./library.js";
@@ -45,6 +46,7 @@ export function addExtensionRoutes(
   const router = express.Router();
   router.use(
     rateLimit({
+      store: new DatabaseRateLimitStore(auth.db, "extension"),
       windowMs: 60000,
       limit: 60,
       standardHeaders: "draft-7",

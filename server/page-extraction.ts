@@ -204,6 +204,9 @@ export class FirecrawlExtractor implements PageExtractor {
     try {
       const signal = AbortSignal.timeout(15000);
       const url = await this.preflight(value, signal);
+      // Preflight pins only our HEAD requests. Firecrawl resolves/fetches the
+      // URL independently; its network isolation and redirect/DNS protections
+      // remain a provider trust boundary, not a guarantee from this preflight.
       const response = await this.transport(
         "https://api.firecrawl.dev/v2/scrape",
         {

@@ -5,7 +5,7 @@ import type { Library } from "./library.js";
 import { AppError } from "./errors.js";
 
 const prefix = "drop-it-legacy-export-";
-const maximumBytes = 384 * 1024 * 1024;
+const legacyMaximumBytes = 384 * 1024 * 1024;
 
 async function cleanupAbandonedExports() {
   for (const entry of await readdir(tmpdir(), { withFileTypes: true })) {
@@ -33,12 +33,13 @@ async function cleanupAbandonedExports() {
   }
 }
 
-// The authenticated route holds its single export slot through staging and
+// The authenticated route holds its owner export slot through staging and
 // delivery. Downloads never keep either database adapter's transaction open.
 export async function stageLegacyExport(
   library: Pick<Library, "export">,
   owner: string,
   signal: AbortSignal,
+  maximumBytes = legacyMaximumBytes,
 ) {
   signal.throwIfAborted();
   await cleanupAbandonedExports();
@@ -59,7 +60,7 @@ export async function stageLegacyExport(
           throw new AppError(
             413,
             "EXPORT_SIZE",
-            "This library exceeds the size limit for a single JSON export.",
+            "This library exceeds the size limit for a single export.",
           );
         await file!.writeFile(chunk, { signal });
       },

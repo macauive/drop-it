@@ -15,6 +15,7 @@ import {
 } from "../server/ai.js";
 import { AppError } from "../server/errors.js";
 import { pdfFixture } from "./pdf-fixture.js";
+import { withImageDecode } from "../server/image-decode.js";
 import { exportLibrary } from "./legacy-export-fixture.js";
 
 const draftResult = {
@@ -105,6 +106,19 @@ test("AI drafts use owned images, strip URL query data, and never save items", a
   assert.equal((await library.search(owner, {})).total, 0);
   await assert.rejects(library.draft(owner, { source: {}, owner: other }));
   await assert.rejects(library.draft(owner, { source: {} }));
+});
+
+test("draft preview shares the image decode gate and releases AI capacity after rejection", async () => {
+  const bytes = await sharp({ create: { width: 6000, height: 4000, channels: 3, background: "white" } }).png().toBuffer();
+  const uploaded = await library.upload(owner, bytes, "image/png");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const holds = [withImageDecode(() => gate), withImageDecode(() => gate)];
+  try {
+    await assert.rejects(library.draft(owner, { source: { attachmentId: uploaded.attachmentId } }), errorCode("FILE_BUSY"));
+  } finally { release(); await Promise.all(holds); }
+  const result = await library.draft(owner, { source: { attachmentId: uploaded.attachmentId } });
+  assert.equal(result.draft.title, draftResult.title);
 });
 
 test("semantic search ranks synonyms, respects filters and owners, and caches embeddings", async () => {

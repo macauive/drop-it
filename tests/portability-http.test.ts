@@ -380,7 +380,7 @@ test("HTTP mid-download abort yields an incomplete archive and releases the expo
   assert.ok(received.length < archive.length);
   // Wait for the route's asynchronous rollback before requesting a new export.
   await eventually(
-    () => !(f.manager as unknown as { exporting: boolean }).exporting,
+    () => !(f.manager as unknown as { exporting: Set<string> }).exporting.has(sourceOwner),
     "aborted export must release its slot",
   );
   const retry = await f.request(sourceOwner, "/api/portability/export");

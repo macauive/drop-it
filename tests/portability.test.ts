@@ -233,6 +233,31 @@ test("portable export includes only the requested owner and aborts without a com
   assert.ok((await exportOf(from)).includes('"type":"end"'), "aborted exports release their concurrency slot");
 });
 
+test("slow owner export does not block another owner; duplicates/capacity reject and abort releases slots", async () => {
+  const a = await owner(), b = await owner(), c = await owner();
+  const controller = new AbortController();
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => { started = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const pending = portability.export(a, async () => { started(); await gate; }, controller.signal);
+  const rejection = assert.rejects(pending, { name: "AbortError" });
+  try {
+    await ready;
+    await assert.rejects(exportOf(a), errorCode("EXPORT_BUSY"));
+    assert.ok((await exportOf(b)).includes('"type":"end"'));
+    let secondStarted!: () => void;
+    const secondReady = new Promise<void>((resolve) => { secondStarted = resolve; });
+    const second = portability.export(b, async () => { secondStarted(); await gate; });
+    try {
+      await secondReady;
+      await assert.rejects(exportOf(c), errorCode("EXPORT_CAPACITY"));
+      controller.abort(); release(); await rejection;
+    } finally { release(); await second; }
+    assert.ok((await exportOf(a)).includes('"type":"end"'));
+  } finally { controller.abort(); release(); await rejection; }
+});
+
 test("portable export avoids legacy source/file amplification beyond the old JSON export limit", async () => {
   const from = await owner(), to = await owner();
   const original = await sharp(randomBytes(1024 * 1024 * 3), {

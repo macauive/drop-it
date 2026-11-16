@@ -1,4 +1,7 @@
 import { createHash, randomUUID, type Hash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
+import { stageLegacyExport } from "./export-file.js";
 import {
   mkdtemp,
   open,
@@ -258,7 +261,7 @@ export class Portability {
   private readonly stages = new Map<string, Stage>();
   private readonly limits: LibraryLimits;
   private readonly timer: ReturnType<typeof setInterval>;
-  private exporting = false;
+  private readonly exporting = new Set<string>();
   constructor(
     private readonly db: Database,
     options: Partial<LibraryLimits> = {},
@@ -958,13 +961,63 @@ export class Portability {
     signal?: AbortSignal,
   ) {
     idSchema.parse(owner);
-    if (this.exporting)
+    if (this.exporting.has(owner))
       throw new AppError(
         429,
         "EXPORT_BUSY",
-        "Another archive is being prepared. Try again shortly.",
+        "Your archive is already being prepared. Try again shortly.",
       );
-    this.exporting = true;
+    if (this.exporting.size >= 2)
+      throw new AppError(
+        429,
+        "EXPORT_CAPACITY",
+        "The archive service is busy. Try again shortly.",
+      );
+    this.exporting.add(owner);
+    let staged: Awaited<ReturnType<typeof stageLegacyExport>> | undefined;
+    const exportSignal = signal ?? new AbortController().signal;
+    try {
+      // PGlite serializes transactions. Stage the consistent snapshot before
+      // awaiting a slow client so one owner cannot hold the shared DB hostage.
+      staged = await stageLegacyExport(
+        {
+          export: (id, emit, abort) =>
+            this.exportSnapshot(id, emit, abort ?? exportSignal),
+        },
+        owner,
+        exportSignal,
+        maxArchiveBytes,
+      );
+      const stream = createReadStream(staged.path, { signal: exportSignal });
+      const lines = createInterface({ input: stream, crlfDelay: Infinity });
+      // readline does not forward input errors to its async iterator.
+      const onError = () => lines.close();
+      stream.on("error", onError);
+      try {
+        for await (const line of lines) {
+          exportSignal.throwIfAborted();
+          await write(line + "\n");
+        }
+        exportSignal.throwIfAborted();
+        if (stream.errored) throw stream.errored;
+      } finally {
+        lines.close();
+        stream.destroy();
+      }
+    } finally {
+      try {
+        await staged?.dispose();
+      } finally {
+        this.exporting.delete(owner);
+      }
+    }
+  }
+
+  private async exportSnapshot(
+    owner: string,
+    write: (chunk: string) => Promise<void>,
+    signal: AbortSignal,
+  ) {
     const hash = createHash("sha256");
     const emit = async (record: unknown, integrity = true) => {
       signal?.throwIfAborted();
@@ -972,126 +1025,120 @@ export class Portability {
       if (integrity) hash.update(line);
       await write(line);
     };
-    try {
-      await this.db.transaction(async (tx) => {
-        // A consistent MVCC snapshot avoids holding an owner write lock while
-        // the browser downloads. Slow/closed clients are bounded by the route.
-        await tx.query(
-          "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+    await this.db.transaction(async (tx) => {
+      // The client only receives bytes after this consistent snapshot closes.
+      await tx.query(
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      );
+      const exists = await tx.query("SELECT id FROM users WHERE id=$1", [
+        owner,
+      ]);
+      if (!exists.rows.length)
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Sign in to export your library.",
         );
-        const exists = await tx.query("SELECT id FROM users WHERE id=$1", [
-          owner,
-        ]);
-        if (!exists.rows.length)
-          throw new AppError(
-            401,
-            "UNAUTHENTICATED",
-            "Sign in to export your library.",
-          );
-        await emit({
-          type: "manifest",
-          format: archiveFormat,
-          version: 3,
-          exportedAt: new Date().toISOString(),
-        });
-        let items = 0,
-          sources = 0,
-          files = 0,
-          fileBytes = 0;
-        const live =
-          "(i.trashed_at IS NULL OR i.trashed_at>now()-interval '7 days')";
-        let after = "00000000-0000-0000-0000-000000000000";
-        for (;;) {
-          const result = await tx.query<PortableItem>(
-            `SELECT i.id,i.source_id AS "sourceId",i.title,i.summary,i.category,i.tags,i.notes,i.is_saved AS "isSaved",i.trashed_at AS "trashedAt",i.revision,i.created_at AS "createdAt",i.updated_at AS "updatedAt",i.reviewed_transcription AS "reviewedTranscription",i.transcription_updated_at AS "transcriptionUpdatedAt" FROM items i WHERE i.owner=$1 AND ${live} AND i.id>$2 ORDER BY i.id LIMIT 100`,
-            [owner, after],
-          );
-          if (!result.rows.length) break;
-          for (const row of result.rows) {
-            await emit({ type: "item", value: row });
-            items++;
-            after = row.id;
-          }
+      await emit({
+        type: "manifest",
+        format: archiveFormat,
+        version: 3,
+        exportedAt: new Date().toISOString(),
+      });
+      let items = 0,
+        sources = 0,
+        files = 0,
+        fileBytes = 0;
+      const live =
+        "(i.trashed_at IS NULL OR i.trashed_at>now()-interval '7 days')";
+      let after = "00000000-0000-0000-0000-000000000000";
+      for (;;) {
+        const result = await tx.query<PortableItem>(
+          `SELECT i.id,i.source_id AS "sourceId",i.title,i.summary,i.category,i.tags,i.notes,i.is_saved AS "isSaved",i.trashed_at AS "trashedAt",i.revision,i.created_at AS "createdAt",i.updated_at AS "updatedAt",i.reviewed_transcription AS "reviewedTranscription",i.transcription_updated_at AS "transcriptionUpdatedAt" FROM items i WHERE i.owner=$1 AND ${live} AND i.id>$2 ORDER BY i.id LIMIT 100`,
+          [owner, after],
+        );
+        if (!result.rows.length) break;
+        for (const row of result.rows) {
+          await emit({ type: "item", value: row });
+          items++;
+          after = row.id;
         }
-        after = "00000000-0000-0000-0000-000000000000";
-        for (;;) {
-          const result = await tx.query<PortableSource>(
-            `SELECT s.id,s.original_text AS "originalText",s.page_snapshot AS "pageSnapshot",s.url,s.created_at AS "createdAt",s.attachment_id AS "attachmentId" FROM sources s WHERE s.owner=$1 AND s.id>$2 AND EXISTS(SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id AND ${live}) ORDER BY s.id LIMIT 100`,
-            [owner, after],
-          );
-          if (!result.rows.length) break;
-          for (const row of result.rows) {
-            await emit({ type: "source", value: row });
-            sources++;
-            after = row.id;
-          }
+      }
+      after = "00000000-0000-0000-0000-000000000000";
+      for (;;) {
+        const result = await tx.query<PortableSource>(
+          `SELECT s.id,s.original_text AS "originalText",s.page_snapshot AS "pageSnapshot",s.url,s.created_at AS "createdAt",s.attachment_id AS "attachmentId" FROM sources s WHERE s.owner=$1 AND s.id>$2 AND EXISTS(SELECT 1 FROM items i WHERE i.owner=s.owner AND i.source_id=s.id AND ${live}) ORDER BY s.id LIMIT 100`,
+          [owner, after],
+        );
+        if (!result.rows.length) break;
+        for (const row of result.rows) {
+          await emit({ type: "source", value: row });
+          sources++;
+          after = row.id;
         }
-        after = "00000000-0000-0000-0000-000000000000";
-        for (;;) {
-          const result = await tx.query<PortableFile>(
-            `SELECT a.id,a.filename,a.mime,octet_length(a.bytes) AS bytes,a.digest AS sha256,a.created_at AS "createdAt" FROM attachments a WHERE a.owner=$1 AND a.id>$2 AND EXISTS(SELECT 1 FROM sources s JOIN items i ON i.owner=s.owner AND i.source_id=s.id WHERE s.owner=a.owner AND s.attachment_id=a.id AND ${live}) ORDER BY a.id LIMIT 100`,
-            [owner, after],
+      }
+      after = "00000000-0000-0000-0000-000000000000";
+      for (;;) {
+        const result = await tx.query<PortableFile>(
+          `SELECT a.id,a.filename,a.mime,octet_length(a.bytes) AS bytes,a.digest AS sha256,a.created_at AS "createdAt" FROM attachments a WHERE a.owner=$1 AND a.id>$2 AND EXISTS(SELECT 1 FROM sources s JOIN items i ON i.owner=s.owner AND i.source_id=s.id WHERE s.owner=a.owner AND s.attachment_id=a.id AND ${live}) ORDER BY a.id LIMIT 100`,
+          [owner, after],
+        );
+        if (!result.rows.length) break;
+        for (const row of result.rows) {
+          const file = portableFileSchema.parse(
+            JSON.parse(JSON.stringify(row)),
           );
-          if (!result.rows.length) break;
-          for (const row of result.rows) {
-            const file = portableFileSchema.parse(
-              JSON.parse(JSON.stringify(row)),
+          await emit({ type: "file", value: file });
+          const fileHash = createHash("sha256");
+          for (
+            let offset = 0, index = 0;
+            offset < file.bytes;
+            offset += archiveChunkBytes, index++
+          ) {
+            const chunk = await tx.query<{ bytes: Uint8Array }>(
+              "SELECT substring(bytes from $3 for $4) AS bytes FROM attachments WHERE owner=$1 AND id=$2",
+              [owner, file.id, offset + 1, archiveChunkBytes],
             );
-            await emit({ type: "file", value: file });
-            const fileHash = createHash("sha256");
-            for (
-              let offset = 0, index = 0;
-              offset < file.bytes;
-              offset += archiveChunkBytes, index++
-            ) {
-              const chunk = await tx.query<{ bytes: Uint8Array }>(
-                "SELECT substring(bytes from $3 for $4) AS bytes FROM attachments WHERE owner=$1 AND id=$2",
-                [owner, file.id, offset + 1, archiveChunkBytes],
-              );
-              const bytes = Buffer.from(chunk.rows[0]?.bytes ?? []);
-              if (
-                bytes.length !==
-                Math.min(archiveChunkBytes, file.bytes - offset)
-              )
-                throw new AppError(
-                  500,
-                  "EXPORT_INTEGRITY",
-                  "An original file could not be exported completely.",
-                );
-              fileHash.update(bytes);
-              await emit({
-                type: "chunk",
-                id: file.id,
-                index,
-                data: bytes.toString("base64"),
-              });
-            }
-            if (fileHash.digest("hex") !== file.sha256)
+            const bytes = Buffer.from(chunk.rows[0]?.bytes ?? []);
+            if (
+              bytes.length !== Math.min(archiveChunkBytes, file.bytes - offset)
+            )
               throw new AppError(
                 500,
                 "EXPORT_INTEGRITY",
-                "An original file failed its integrity check.",
+                "An original file could not be exported completely.",
               );
-            files++;
-            fileBytes += file.bytes;
-            after = file.id;
+            fileHash.update(bytes);
+            await emit({
+              type: "chunk",
+              id: file.id,
+              index,
+              data: bytes.toString("base64"),
+            });
           }
+          if (fileHash.digest("hex") !== file.sha256)
+            throw new AppError(
+              500,
+              "EXPORT_INTEGRITY",
+              "An original file failed its integrity check.",
+            );
+          files++;
+          fileBytes += file.bytes;
+          after = file.id;
         }
-        await emit(
-          {
-            type: "end",
-            items,
-            sources,
-            files,
-            fileBytes,
-            sha256: hash.digest("hex"),
-          },
-          false,
-        );
-      });
-    } finally {
-      this.exporting = false;
-    }
+      }
+      await emit(
+        {
+          type: "end",
+          items,
+          sources,
+          files,
+          fileBytes,
+          sha256: hash.digest("hex"),
+        },
+        false,
+      );
+    });
   }
 }
 

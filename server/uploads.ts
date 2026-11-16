@@ -1,6 +1,7 @@
 import { Worker } from "node:worker_threads";
 import { z } from "zod";
 import sharp from "sharp";
+import { imageDecodeOptions, withImageDecode } from "./image-decode.js";
 import { fileMime, isImageMime, maxFileBytes } from "../shared/files.js";
 import { AppError } from "./errors.js";
 
@@ -24,7 +25,6 @@ const invalid = () =>
     "Choose a valid image, PDF, TXT, Markdown, CSV, or JSON file.",
   );
 let activePdfChecks = 0;
-let activeImageChecks = 0;
 
 async function validatePdf(bytes: Buffer) {
   if (!bytes.subarray(0, 8).toString("ascii").startsWith("%PDF-"))
@@ -101,39 +101,31 @@ export async function validateUpload(
     throw invalid();
   let originalText = "";
   if (isImageMime(mime)) {
-    // Pixel limits bound one decode; also bound simultaneous native allocations.
-    if (activeImageChecks >= 2)
-      throw new AppError(
-        429,
-        "FILE_BUSY",
-        "Image processing is busy. Try again shortly.",
-      );
-    activeImageChecks++;
-    try {
-      const image = sharp(bytes, {
-        limitInputPixels: 25_000_000,
-        animated: true,
-        failOn: "warning",
-      });
-      const metadata = await image.metadata();
-      const actual = (
-        { png: "image/png", jpeg: "image/jpeg", webp: "image/webp" } as Record<
-          string,
-          string
-        >
-      )[metadata.format ?? ""];
-      if (actual !== mime || (metadata.pages && metadata.pages > 1))
-        throw invalid();
-      await image.stats();
-    } catch {
-      throw new AppError(
-        400,
-        "INVALID_IMAGE",
-        "Choose a valid, single-frame PNG, JPEG, or WebP image under 25 megapixels.",
-      );
-    } finally {
-      activeImageChecks--;
-    }
+    await withImageDecode(async () => {
+      try {
+        const image = sharp(bytes, {
+          ...imageDecodeOptions,
+          animated: true,
+        }).timeout({ seconds: 5 });
+        const metadata = await image.metadata();
+        const actual = (
+          {
+            png: "image/png",
+            jpeg: "image/jpeg",
+            webp: "image/webp",
+          } as Record<string, string>
+        )[metadata.format ?? ""];
+        if (actual !== mime || (metadata.pages && metadata.pages > 1))
+          throw invalid();
+        await image.stats();
+      } catch {
+        throw new AppError(
+          400,
+          "INVALID_IMAGE",
+          "Choose a valid, single-frame PNG, JPEG, or WebP image under 25 megapixels.",
+        );
+      }
+    });
   } else if (mime === "application/pdf") {
     await validatePdf(bytes);
   } else {

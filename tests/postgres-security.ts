@@ -7,6 +7,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import type { Response } from "express";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
@@ -19,8 +20,8 @@ import { AppError } from "../server/errors.js";
 import { exportLibrary } from "./legacy-export-fixture.js";
 
 const runFile = promisify(execFile);
-const binary = (name: string) => `/opt/homebrew/bin/${name}`;
-const root = await mkdtemp("/private/tmp/drop-it-pg-security-");
+const binary = (name: string) => join(process.env.DROP_IT_PG_BIN ?? "/opt/homebrew/bin", name);
+const root = await mkdtemp(join(tmpdir(), "drop-it-pg-security-"));
 await chmod(root, 0o700);
 const cluster = join(root, "cluster"),
   socket = join(root, "socket");

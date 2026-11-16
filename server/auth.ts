@@ -181,7 +181,10 @@ export class Auth implements OAuthServerProvider {
       getClient: async (id: string) => {
         const { rows } = await this.db.query<{
           data: OAuthClientInformationFull;
-        }>("SELECT data FROM oauth_clients WHERE id=$1", [id]);
+        }>(
+          "UPDATE oauth_clients SET last_used_at=clock_timestamp() WHERE id=$1 RETURNING data",
+          [id],
+        );
         return rows[0]?.data;
       },
       registerClient: async (

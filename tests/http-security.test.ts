@@ -11,7 +11,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { gzipSync } from "node:zlib";
+import { gzipSync, deflateSync, brotliCompressSync } from "node:zlib";
+import * as zlib from "node:zlib";
+import { setTimeout as delay } from "node:timers/promises";
 import type { RequestHandler } from "express";
 import { createApp } from "../server/app.js";
 import { loadConfig, type Config } from "../server/config.js";
@@ -283,6 +285,130 @@ test("invalid JSON, oversized and compressed bodies fail without source disclosu
   assert.equal(upload.status, 413);
 });
 
+test("public compressed requests remain usable and trailing corrupt frames cannot terminate the server", async (t) => {
+  const isolated = await fixture();
+  try {
+    const post = (
+      path: string,
+      type: string,
+      encoding: string,
+      frame: Buffer,
+      trailing = false,
+      delayed = false,
+    ) =>
+      new Promise<number>((resolve, reject) => {
+        const request = httpRequest(
+          isolated.target + path,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": type,
+              "Content-Encoding": encoding,
+              Accept: "application/json, text/event-stream",
+            },
+          },
+          (response) => {
+            response.resume();
+            response.once("end", () => resolve(response.statusCode!));
+            response.once("error", reject);
+          },
+        );
+        request.setTimeout(5000, () =>
+          request.destroy(new Error("Compressed request stalled")),
+        );
+        request.once("error", reject);
+        const junk = Buffer.alloc(64 * 1024, 0xff);
+        if (!delayed)
+          request.end(trailing ? Buffer.concat([frame, junk]) : frame);
+        else {
+          request.write(frame);
+          void delay(20)
+            .then(() => request.end(junk))
+            .catch(reject);
+        }
+      });
+    const codecs: [string, (bytes: Buffer) => Buffer][] = [
+      ["gzip", gzipSync],
+      ["deflate", deflateSync],
+      ["br", brotliCompressSync],
+    ];
+    if (typeof zlib.zstdCompressSync === "function")
+      codecs.push(["zstd", zlib.zstdCompressSync]);
+    else
+      t.diagnostic(
+        "Zstd is unavailable on this older Node runtime; gzip/deflate/Brotli remain covered.",
+      );
+    for (const [encoding, compress] of codecs) {
+      for (const [path, type, input, expected] of [
+        [
+          "/mcp",
+          "application/json",
+          '{"jsonrpc":"2.0","id":1,"method":"ping"}',
+          200,
+        ],
+        [
+          "/share",
+          "application/x-www-form-urlencoded",
+          "text=Synthetic+compressed+source",
+          200,
+        ],
+        ["/register", "application/json", "{}", 400],
+        [
+          "/token",
+          "application/x-www-form-urlencoded",
+          "grant_type=synthetic_invalid_grant",
+          400,
+        ],
+      ] as const) {
+        const frame = compress(Buffer.from(input));
+        assert.equal(await post(path, type, encoding, frame), expected);
+        for (const delayed of [false, true]) {
+          const status = await post(path, type, encoding, frame, true, delayed);
+          // A decoder may reject trailing bytes or finish the valid first frame.
+          // Neither outcome may emit an unhandled stream error or kill the app.
+          assert.ok(
+            [200, 400].includes(status),
+            `${encoding} ${path}: ${status}`,
+          );
+          const health = await fetch(isolated.target + "/health");
+          assert.equal(health.status, 200);
+          await health.arrayBuffer();
+        }
+        assert.equal(await post(path, type, encoding, frame), expected);
+      }
+    }
+  } finally {
+    await isolated.close();
+  }
+});
+
+test("oversized invalid tag collections return bounded errors without persistence and permit a valid retry", async () => {
+  const isolated = await fixture();
+  try {
+    const input = {
+      requestId: randomUUID(),
+      title: "Synthetic bounded collection",
+      source: { originalText: "Synthetic source" },
+    };
+    const rejected = await isolated.request("/api/items", "POST", {
+      ...input,
+      tags: Array(24000).fill({}),
+    });
+    assert.equal(rejected.status, 400);
+    assert.ok((await rejected.text()).length < 1024);
+    const owner = (await isolated.auth.sessionOwner(isolated.session))!;
+    assert.equal((await isolated.library.search(owner, {})).total, 0);
+    const accepted = await isolated.request("/api/items", "POST", {
+      ...input,
+      tags: ["synthetic"],
+    });
+    assert.equal(accepted.status, 201);
+    assert.equal((await isolated.library.search(owner, {})).total, 1);
+  } finally {
+    await isolated.close();
+  }
+});
+
 test("executable content stays literal and update mass assignment is rejected", async () => {
   const literal =
     '<img src=x onerror="globalThis.__dropItXss=true"><script>alert(1)</script>';
@@ -446,12 +572,21 @@ test("export slot remains held during aborted builds and releases after completi
       release = resolve;
     });
     const original = isolated.library.export.bind(isolated.library);
+    const owner = await isolated.auth.sessionOwner(isolated.session);
+    const otherOwner = randomUUID();
+    await isolated.db.query(
+      "INSERT INTO users(id,singleton,password_hash) VALUES($1,NULL,'synthetic-unusable-hash')",
+      [otherOwner],
+    );
+    const otherSession = await isolated.auth.session(otherOwner);
     const mock = t.mock.method(
       isolated.library,
       "export",
       async (...args: Parameters<typeof original>) => {
-        started();
-        await hold;
+        if (args[0] === owner) {
+          started();
+          await hold;
+        }
         return original(...args);
       },
     );
@@ -461,6 +596,14 @@ test("export slot remains held during aborted builds and releases after completi
       signal: controller.signal,
     });
     await entered;
+    const otherExport = await isolated.request(
+      "/api/export",
+      "GET",
+      undefined,
+      { Cookie: `drop_it_session=${otherSession}` },
+    );
+    assert.equal(otherExport.status, 200);
+    assert.equal((await otherExport.json()).items.length, 0);
     assert.equal((await isolated.request("/api/export")).status, 429);
     controller.abort();
     await assert.rejects(first);

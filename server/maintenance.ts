@@ -31,6 +31,9 @@ export async function cleanupExpired(db: Database) {
   }
   await db.transaction(async (tx) => {
     await tx.query(
+      "DELETE FROM rate_limit_counters WHERE window_start < now()-interval '1 day'",
+    );
+    await tx.query(
       "DELETE FROM page_captures WHERE created_at < now()-interval '24 hours'",
     );
     await tx.query(
@@ -52,6 +55,16 @@ export async function cleanupExpired(db: Database) {
         AND active.owner=expired.owner AND active.client_id=expired.client_id
         AND active.kind='refresh' AND active.expires_at>now()
       ))`);
+    // Preserve in-flight consent/code flows as well as every token family.
+    // Missing/invalid issue timestamps are retained rather than guessed.
+    await tx.query(`DELETE FROM oauth_clients c
+      WHERE c.last_used_at < now()-interval '90 days'
+      AND CASE WHEN jsonb_typeof(c.data->'client_id_issued_at')='number'
+        THEN (c.data->>'client_id_issued_at')::numeric < extract(epoch FROM now()-interval '90 days')
+        ELSE false END
+      AND NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=c.id)
+      AND NOT EXISTS(SELECT 1 FROM oauth_pending p WHERE p.client_id=c.id)
+      AND NOT EXISTS(SELECT 1 FROM oauth_codes a WHERE a.client_id=c.id)`);
     // Abandoned uploads get a grace period; sources in use are never collected.
     await tx.query(`DELETE FROM attachments a WHERE created_at < now()-interval '24 hours'
       AND NOT EXISTS(SELECT 1 FROM sources s WHERE s.owner=a.owner AND s.attachment_id=a.id)`);

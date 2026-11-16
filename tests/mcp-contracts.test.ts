@@ -106,6 +106,32 @@ async function connect(
   };
 }
 
+test("MCP rejects oversized arrays and object members before schema validation or scope dispatch", { timeout: 5000 }, async () => {
+  const lib = fixture();
+  let saves = 0;
+  lib.save = async () => { saves++; throw new Error("Must not save"); };
+  const { client, close } = await connect(lib, []);
+  try {
+    const base = { requestId: randomUUID(), title: "Synthetic", source: { originalText: "Synthetic" } };
+    for (const arguments_ of [
+      { ...base, tags: Array(24000).fill("a") },
+      { ...base, source: Object.fromEntries(Array.from({ length: 12000 }, (_, i) => [String(i), 1])) },
+    ]) {
+      const result = await client.callTool({ name: "save_drop", arguments: arguments_ });
+      assert.equal(result.isError, true);
+      assert.match(JSON.stringify(result.content), /10000/);
+      assert.ok(JSON.stringify(result).length < 2000);
+    }
+    const malformed = await client.callTool({ name: "save_drop", arguments: { ...base, tags: Array(13).fill("a") } });
+    assert.equal(malformed.isError, true);
+    assert.match(JSON.stringify(malformed.content), /validation/i);
+    const denied = await client.callTool({ name: "save_drop", arguments: base });
+    assert.equal(denied.isError, true);
+    assert.ok(denied._meta?.["mcp/www_authenticate"]);
+    assert.equal(saves, 0);
+  } finally { await close(); }
+});
+
 test("all nine MCP tools publish success schemas and only useful results attach widgets", async () => {
   const { client, close } = await connect();
   try {

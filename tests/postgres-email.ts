@@ -386,8 +386,10 @@ try {
   );
   await source.query("DROP TABLE page_captures");
   await source.query("ALTER TABLE sources DROP COLUMN page_snapshot");
+  await source.query("DROP TABLE rate_limit_counters");
+  await source.query("ALTER TABLE oauth_clients DROP COLUMN last_used_at");
   await source.query(
-    "DELETE FROM schema_migrations WHERE version IN (11,12,13)",
+    "DELETE FROM schema_migrations WHERE version IN (11,12,13,14)",
   );
   const tables = [
     "users",
@@ -445,7 +447,7 @@ try {
         "SELECT max(version)::int AS version FROM schema_migrations",
       )
     ).rows[0].version,
-    13,
+    14,
   );
   assert.equal(
     (

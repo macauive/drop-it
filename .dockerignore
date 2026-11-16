@@ -4,9 +4,15 @@
 !package-lock.json
 !tsconfig.json
 !vite.config.ts
+!scripts/
+!scripts/inline-widget.ts
 !server/
 !server/**
 !shared/
 !shared/**
 !web/
 !web/**
+!release/
+!release/review/
+!release/review/walkthrough-2026-10-03.mp4
+!release/review/walkthrough-0.1.1-2026-10-16.mp4

@@ -132,7 +132,9 @@ export function loadConfig() {
           .regex(/^[A-Za-z0-9._=-]+$/)
           .parse(process.env.OPENAI_APPS_CHALLENGE)
       : undefined,
-    // Use only behind a proxy that replaces forwarding headers; never trust all hops.
+    // Numeric distance from the socket to the verified client, on every ingress.
+    // The default deployment uses 1 only with a verified rightmost XFF address.
+    // Never trust all hops or permit a shorter path (see README deployment notes).
     trustProxy: z.coerce
       .number()
       .int()
