@@ -6,6 +6,7 @@ import express, {
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import { proxyTrust } from "./proxy.js";
 import { DatabaseRateLimitStore } from "./rate-limit-store.js";
 import { ChatGPT } from "./chatgpt.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -103,7 +104,7 @@ export function createApp(
     (m) => `'sha256-${createHash("sha256").update(m[1]).digest("base64")}'`,
   );
   app.disable("x-powered-by");
-  if (config.trustProxy) app.set("trust proxy", config.trustProxy);
+  app.set("trust proxy", proxyTrust(config.trustProxy, config.trustCloudflareProxy));
   app.use(
     helmet({
       contentSecurityPolicy: {

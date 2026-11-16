@@ -353,6 +353,43 @@ the services matches Render's topology and leaves that assertion unchanged.
 
 ## Residual risks and explicit verification boundary
 
+### November 16 authorized rollout follow-up: proxy identity
+
+The first authorized deployment of `9f18343` exposed a remaining live proxy
+configuration issue: canonical-domain requests from one verified client received
+fresh API budgets, while the database contained neither that client's normalized
+hash nor the spoofed-header hashes. The database store alone did not establish
+correct IP identity under `TRUST_PROXY_HOPS=1`. Requests supplying
+`CF-Connecting-IP` were rejected at the edge with 403; forged earlier XFF and
+`X-Real-IP` were accepted but did not match the verified client counter.
+
+The follow-up adds an opt-in `TRUST_CLOUDFLARE_PROXY=true`, requiring exactly one
+base managed-ingress hop. The shared Express trust function accepts one further
+hop only from Cloudflare's published IPv4/IPv6 networks and always stops after
+it. A shorter path stops at its non-Cloudflare client. Existing numeric behavior
+is preserved with the flag off, and no custom header is treated as authoritative.
+The static allowlist uses Node's built-in BlockList and needs periodic review.
+This authenticates Cloudflare's network, not zone ownership. The managed ingress
+must still append or replace XFF with its authentic peer; live canonical and
+direct-Render spoof tests are required after deployment.
+
+New tests cover IPv4, IPv6, both mapped IPv4 representations, network/hop bounds,
+shorter paths, forged aliases, strict configuration, and shared API/login/OAuth
+budgets across two app instances while edge addresses rotate. `npm run check`
+passed lint, typecheck, build and **330/330 tests** on the Mac. Node 24.22.3 Linux
+passed **13/13** focused proxy, release-config, HTTPS authentication and shared
+rate-limit tests. Initial Mac HTTP tests could not bind in the restricted sandbox;
+the authorized rerun outside that restriction passed. A fresh independent
+boundary investigator and candidate reviewer reported no concrete surviving
+source-backed bypass/regression. The reviewer could not bind its own listeners;
+the parent independently ran those checks successfully. The live Render flag was
+merged without reading or replacing other environment variables; that API update
+triggered a rebuild of `9f18343`, whose code ignores the new flag. The follow-up
+commit must be deployed before claiming the proxy correction is active.
+
+The following original boundaries describe the pre-release phase; the later
+production verification is recorded separately.
+
 This is a **local implementation and verification result**, not a production
 security attestation. Production parity, effective proxy addressing, instance count,
 provider-side Firecrawl protections and production memory usage remain unverified.

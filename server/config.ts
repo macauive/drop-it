@@ -8,6 +8,7 @@ export type Config = Omit<
   | "publicAccounts"
   | "signupEnabled"
   | "trustProxy"
+  | "trustCloudflareProxy"
   | "publicSite"
   | "domainChallenge"
   | "libraryLimits"
@@ -21,6 +22,7 @@ export type Config = Omit<
       | "publicAccounts"
       | "signupEnabled"
       | "trustProxy"
+      | "trustCloudflareProxy"
       | "publicSite"
       | "domainChallenge"
       | "libraryLimits"
@@ -106,6 +108,18 @@ export function loadConfig() {
     throw new Error(
       "Public signup requires publisher, support and backup retention settings.",
     );
+  const trustProxy = z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(5)
+    .parse(process.env.TRUST_PROXY_HOPS ?? 0);
+  const trustCloudflareProxy =
+    z
+      .enum(["true", "false"])
+      .parse(process.env.TRUST_CLOUDFLARE_PROXY ?? "false") === "true";
+  if (trustCloudflareProxy && trustProxy !== 1)
+    throw new Error("TRUST_CLOUDFLARE_PROXY requires TRUST_PROXY_HOPS=1");
   return {
     firecrawl: process.env.FIRECRAWL_API_KEY?.trim()
       ? {
@@ -132,15 +146,10 @@ export function loadConfig() {
           .regex(/^[A-Za-z0-9._=-]+$/)
           .parse(process.env.OPENAI_APPS_CHALLENGE)
       : undefined,
-    // Numeric distance from the socket to the verified client, on every ingress.
-    // The default deployment uses 1 only with a verified rightmost XFF address.
-    // Never trust all hops or permit a shorter path (see README deployment notes).
-    trustProxy: z.coerce
-      .number()
-      .int()
-      .min(0)
-      .max(5)
-      .parse(process.env.TRUST_PROXY_HOPS ?? 0),
+    // Numeric distance must hold on every ingress. The optional Cloudflare
+    // mode adds only an allowlisted second hop after one managed ingress.
+    trustProxy,
+    trustCloudflareProxy,
     redirectUris,
     dataDir: resolve(process.env.DATA_DIR ?? ".data"),
     databaseUrl: process.env.DATABASE_URL || undefined,

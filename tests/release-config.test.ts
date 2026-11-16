@@ -13,6 +13,7 @@ const keys = [
   "PUBLIC_SUPPORT_EMAIL",
   "BACKUP_RETENTION_DAYS",
   "TRUST_PROXY_HOPS",
+  "TRUST_CLOUDFLARE_PROXY",
   "OPENAI_APPS_CHALLENGE",
   "OAUTH_REDIRECT_URIS",
   "EMAIL_AUTH_ENABLED",
@@ -71,6 +72,20 @@ test("release settings reject malformed proxy, flags, contact and challenge valu
     process.env.PUBLIC_PUBLISHER_NAME = "Synthetic";
     process.env.PUBLIC_SUPPORT_EMAIL = "not-an-email";
     process.env.BACKUP_RETENTION_DAYS = "3";
+    assert.throws(() => loadConfig());
+  }));
+
+test("Cloudflare proxy trust requires an explicit flag and one managed ingress", () =>
+  isolated(() => {
+    assert.equal(loadConfig().trustCloudflareProxy, false);
+    process.env.TRUST_CLOUDFLARE_PROXY = "true";
+    for (const hops of ["0", "2", "5"]) {
+      process.env.TRUST_PROXY_HOPS = hops;
+      assert.throws(() => loadConfig(), /TRUST_CLOUDFLARE_PROXY/);
+    }
+    process.env.TRUST_PROXY_HOPS = "1";
+    assert.equal(loadConfig().trustCloudflareProxy, true);
+    process.env.TRUST_CLOUDFLARE_PROXY = "yes";
     assert.throws(() => loadConfig());
   }));
 
