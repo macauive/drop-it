@@ -2,6 +2,8 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite-pgvector";
+import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { migrate, type Database } from "../server/db.js";
 import { Library, type LibraryLimits } from "../server/library.js";
 import { cleanupExpired } from "../server/maintenance.js";
@@ -54,7 +56,7 @@ const input = (text: string) => ({
   source: { originalText: text },
 });
 before(async () => {
-  const raw = new PGlite();
+  const raw = new PGlite({ extensions: { vector, pg_trgm } });
   await raw.waitReady;
   db = {
     query: (sql, params) => raw.query(sql, params),

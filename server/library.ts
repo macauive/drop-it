@@ -22,7 +22,15 @@ import { pageSnapshotSchema, type PageSnapshot } from "../shared/page.js";
 import { publicPageUrl, type PageExtractor } from "./page-extraction.js";
 import { AppError } from "./errors.js";
 import type { AIProvider } from "./ai.js";
-import { semanticRank, type SearchDocument } from "./semantic.js";
+import {
+  indexSearchBatch,
+  normalizedVector,
+  requireSearchPermission,
+  searchIndexStatus,
+  semanticPage,
+} from "./semantic.js";
+import { SearchIndexer } from "./search-index.js";
+import { searchScope, scopeFilter, literalPattern } from "./search-scope.js";
 import { validateUpload } from "./uploads.js";
 import { isImageMime } from "../shared/files.js";
 
@@ -106,6 +114,7 @@ function withEvidence(item: SearchItem, query: string): Item {
 }
 export class Library {
   readonly limits: LibraryLimits;
+  readonly searchIndexer: SearchIndexer;
   constructor(
     readonly db: Database,
     private readonly ai?: AIProvider,
@@ -116,12 +125,21 @@ export class Library {
     private readonly pageExtractor?: PageExtractor,
   ) {
     this.limits = { ...defaultLibraryLimits, ...limits };
+    this.searchIndexer = new SearchIndexer(db, (owner, run) =>
+      this.withAI(owner, run),
+    );
     for (const value of Object.values(this.limits))
       if (!Number.isSafeInteger(value) || value < 1)
         throw new Error("Library limits must be positive safe integers.");
   }
   // One Library instance owns all tenants in the single-process deployment.
   private readonly serviceAI = { start: 0, count: 0, busy: 0 };
+  // Bounded, short-lived query vectors let an existing search page refresh
+  // while its owner is indexing. Keys contain a digest, never the query text.
+  private readonly searchQueries = new Map<
+    string,
+    { epoch: number; vector: number[]; expires: number }
+  >();
   private readonly aiUsage = new Map<
     string,
     { start: number; count: number; busy: boolean }
@@ -152,13 +170,17 @@ export class Library {
     const value = preferencesSchema.parse(input);
     return this.db.transaction(async (tx) => {
       const { rows } = await tx.query(
-        "UPDATE users SET ai_search_enabled=$2 WHERE id=$1 RETURNING id",
+        "UPDATE users SET ai_search_epoch=ai_search_epoch+CASE WHEN ai_search_enabled<>$2 THEN 1 ELSE 0 END,ai_search_enabled=$2 WHERE id=$1 RETURNING id",
         [idSchema.parse(owner), value.aiSearchEnabled],
       );
       if (!rows.length)
         throw new AppError(404, "NOT_FOUND", "Account unavailable.");
-      if (!value.aiSearchEnabled)
+      if (!value.aiSearchEnabled) {
+        for (const key of this.searchQueries.keys())
+          if (key.startsWith(`${owner}:`)) this.searchQueries.delete(key);
         await tx.query("DELETE FROM item_embeddings WHERE owner=$1", [owner]);
+        await tx.query("DELETE FROM search_index_jobs WHERE owner=$1", [owner]);
+      }
       return value;
     });
   }
@@ -617,8 +639,10 @@ export class Library {
       return keywordFallback(
         "Showing keyword matches. AI search is unavailable.",
       );
-    const params: unknown[] = [owner];
-    const where = ["i.owner=$1"];
+    const scope = searchScope(q);
+    const scoped = scopeFilter(owner, scope);
+    const params = scoped.params;
+    const where = [scoped.filtered];
     const add = (expression: string, value: unknown) => {
       params.push(value);
       where.push(expression.replace("?", `$${params.length}`));
@@ -628,27 +652,16 @@ export class Library {
     if (q.query && !semantic) {
       // Literal substring terms: SQL wildcards from input do not widen the search.
       for (const term of terms) {
-        add(
-          `strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,concat_ws(' ',COALESCE(i.reviewed_transcription,s.original_text),s.page_snapshot->>'text'),s.url)),?)>0`,
-          term,
-        );
+        add("i.search_text LIKE ? ESCAPE '!'", literalPattern(term));
       }
     }
-    if (q.category) add("lower(i.category)=lower(?)", q.category);
-    where.push(
-      q.view === "Trash"
-        ? "i.trashed_at IS NOT NULL AND i.trashed_at > clock_timestamp()-interval '7 days'"
-        : "i.trashed_at IS NULL",
-    );
-    if (q.view === "Saved") where.push("i.is_saved=true");
-    if (q.tag) add("?=ANY(i.tags)", q.tag.toLowerCase());
-    if (q.before) add("i.created_at<?", q.before);
-    if (q.after) add("i.created_at>?", q.after);
     const filtered = where.join(" AND ");
-    const total = await this.db.query<{ count: string }>(
-      `SELECT count(*) FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE ${filtered}`,
-      params,
-    );
+    const total = semantic
+      ? { rows: [{ count: "0" }] }
+      : await this.db.query<{ count: string }>(
+          `SELECT count(*) FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE ${filtered}`,
+          params,
+        );
     const resultParams = [...params];
     let order = "i.created_at DESC,i.id";
     if (q.query && !semantic) {
@@ -669,46 +682,119 @@ export class Library {
         order,
       ].join(",");
     }
-    let { rows: items } = await this.db.query<SearchItem>(
-      `${q.query ? searchSelection : selection} WHERE ${filtered} ORDER BY ${order} LIMIT $${resultParams.length + 1} OFFSET $${resultParams.length + 2}`,
-      [...resultParams, q.limit, q.offset],
-    );
+    let items: SearchItem[] = [];
+    if (!semantic)
+      ({ rows: items } = await this.db.query<SearchItem>(
+        `${q.query ? searchSelection : selection} WHERE ${filtered} ORDER BY ${order} LIMIT $${resultParams.length + 1} OFFSET $${resultParams.length + 2}`,
+        [...resultParams, q.limit, q.offset],
+      ));
     let resultTotal = Number(total.rows[0].count);
+    let searchIndex: SearchResult["searchIndex"];
+    let searchNotice: string | undefined;
     if (semantic) {
-      if (resultTotal > 1000 && q.mode === "hybrid")
-        return keywordFallback(
-          "Showing keyword matches. Narrow the filters to include AI matches in libraries over 1,000 drops.",
-        );
-      if (resultTotal > 1000)
-        throw new AppError(
-          400,
-          "AI_SEARCH_SIZE",
-          "AI search currently supports up to 1,000 drops at once. Narrow the pool or view.",
-        );
-      let docs: (SearchDocument & { keywordMatch: boolean })[] = [];
-      let ranked: { id: string; revision: number; score: number }[];
       try {
-        ranked = await this.withAI(owner, async (ai) => {
-          // Loading full source documents is part of the bounded AI work too.
-          const result = await this.db.query<
-            SearchDocument & { keywordMatch: boolean }
-          >(
-            `SELECT i.id,i.revision,i.title,i.summary,i.category,i.tags,i.notes,concat_ws(' ',COALESCE(i.reviewed_transcription,s.original_text),s.page_snapshot->>'text') AS "originalText",
-            NOT EXISTS (SELECT 1 FROM unnest($${params.length + 1}::text[]) AS term
-              WHERE strpos(lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,concat_ws(' ',COALESCE(i.reviewed_transcription,s.original_text),s.page_snapshot->>'text'),s.url)),term)=0) AS "keywordMatch"
-            FROM items i JOIN sources s ON s.id=i.source_id AND s.owner=i.owner WHERE ${filtered} ORDER BY i.id`,
-            [...params, terms],
-          );
-          docs = result.rows;
-          return semanticRank(
+        const cacheKey = `${owner}:${digest(q.query)}`;
+        const runSearch = () =>
+          this.withAI(owner, async (ai) => {
+            const { rows } = await this.db.query<{ epoch: number }>(
+              "SELECT ai_search_epoch AS epoch FROM users WHERE id=$1 AND ai_search_enabled=true",
+              [owner],
+            );
+            if (!rows.length)
+              throw new AppError(
+                403,
+                "AI_DISABLED",
+                "AI search is turned off in Settings.",
+              );
+            const epoch = rows[0].epoch;
+            // At most one 32-document batch is prepared on the request path.
+            // Large/cold libraries continue in the resumable background worker.
+            await indexSearchBatch(this.db, ai, owner, scope, epoch);
+            const status = await searchIndexStatus(this.db, owner, scope);
+            if (status.pending)
+              await this.searchIndexer.enqueue(owner, scope, epoch);
+            await requireSearchPermission(this.db, owner, epoch);
+            const [rawQuery] = await ai.embed([q.query]);
+            const vector = normalizedVector(rawQuery);
+            await requireSearchPermission(this.db, owner, epoch);
+            const page = await semanticPage(
+              this.db,
+              owner,
+              scope,
+              epoch,
+              vector,
+              terms,
+              q.mode === "hybrid",
+              q.limit,
+              q.offset,
+            );
+            if (this.searchQueries.size >= 128)
+              this.searchQueries.delete(
+                this.searchQueries.keys().next().value!,
+              );
+            this.searchQueries.set(cacheKey, {
+              epoch,
+              vector,
+              expires: Date.now() + 5 * 60000,
+            });
+            return { page, status, epoch };
+          });
+        let result: Awaited<ReturnType<typeof runSearch>>;
+        try {
+          result = await runSearch();
+        } catch (error) {
+          const cached = this.searchQueries.get(cacheKey);
+          if (!(
+            error instanceof AppError &&
+            error.code === "AI_BUSY" &&
+            cached &&
+            cached.expires > Date.now()
+          ))
+            throw error;
+          await requireSearchPermission(this.db, owner, cached.epoch);
+          const status = await searchIndexStatus(this.db, owner, scope);
+          if (status.pending)
+            await this.searchIndexer.enqueue(owner, scope, cached.epoch);
+          const page = await semanticPage(
             this.db,
-            ai,
             owner,
-            q.query,
-            docs,
-            async () => (await this.preferences(owner)).aiSearchEnabled,
+            scope,
+            cached.epoch,
+            cached.vector,
+            terms,
+            q.mode === "hybrid",
+            q.limit,
+            q.offset,
           );
+          result = { page, status, epoch: cached.epoch };
+        }
+        searchIndex = result.status;
+        if (searchIndex.pending)
+          searchNotice = `AI search has indexed ${searchIndex.indexed.toLocaleString("en-US")} of ${searchIndex.total.toLocaleString("en-US")} drops in this view. Indexing continues in the background; search again for updated matches.`;
+        const { matches } = result.page;
+        const current = await this.db.query<SearchItem>(
+          `${searchSelection} WHERE ${filtered} AND i.id=ANY($${params.length + 1}::uuid[])
+          AND EXISTS(SELECT 1 FROM users WHERE id=$1 AND ai_search_enabled=true AND ai_search_epoch=$${params.length + 2})`,
+          [...params, matches.map((entry) => entry.id), result.epoch],
+        );
+        await requireSearchPermission(this.db, owner, result.epoch);
+        const byId = new Map(current.rows.map((item) => [item.id, item]));
+        items = matches.flatMap((entry) => {
+          const item = byId.get(entry.id);
+          return item && item.revision === entry.revision
+            ? [
+                {
+                  ...item,
+                  matchType: (entry.keyword
+                    ? entry.semantic
+                      ? "both"
+                      : "keyword"
+                    : "semantic") as "both" | "keyword" | "semantic",
+                },
+              ]
+            : [];
         });
+        resultTotal = result.page.total;
       } catch (error) {
         if (
           q.mode === "hybrid" &&
@@ -720,46 +806,6 @@ export class Library {
           );
         throw error;
       }
-      const byRank = new Map(ranked.map((entry) => [entry.id, entry]));
-      const semanticIds = new Set(byRank.keys());
-      const keywordIds = new Set(
-        docs.filter((doc) => doc.keywordMatch).map((doc) => doc.id),
-      );
-      for (const doc of q.mode === "hybrid" ? docs : []) {
-        if (doc.keywordMatch) {
-          const entry = byRank.get(doc.id);
-          byRank.set(doc.id, {
-            id: doc.id,
-            revision: doc.revision,
-            score: 2 + (entry?.score ?? 0),
-          });
-        }
-      }
-      ranked = [...byRank.values()].sort(
-        (a, b) => b.score - a.score || a.id.localeCompare(b.id),
-      );
-      const current = await this.db.query<SearchItem>(
-        `${searchSelection} WHERE ${filtered} AND i.id=ANY($${params.length + 1}::uuid[])`,
-        [...params, ranked.map((entry) => entry.id)],
-      );
-      const byId = new Map(current.rows.map((item) => [item.id, item]));
-      const results = ranked.flatMap((entry) => {
-        const item = byId.get(entry.id);
-        return item && item.revision === entry.revision
-          ? [
-              {
-                ...item,
-                matchType: (keywordIds.has(item.id)
-                  ? semanticIds.has(item.id)
-                    ? "both"
-                    : "keyword"
-                  : "semantic") as "both" | "keyword" | "semantic",
-              },
-            ]
-          : [];
-      });
-      resultTotal = results.length;
-      items = results.slice(q.offset, q.offset + q.limit);
     }
     const stats = await this.db.query<{
       all: string;
@@ -789,6 +835,8 @@ export class Library {
         categorySchema.parse(row.category),
       ),
       total: resultTotal,
+      ...(searchIndex ? { searchIndex } : {}),
+      ...(searchNotice ? { searchNotice } : {}),
       counts: {
         "All drops": Number(stats.rows[0].all),
         Saved: Number(stats.rows[0].saved),

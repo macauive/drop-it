@@ -95,6 +95,18 @@ export async function postgresFixture() {
     } finally {
       await admin.close();
     }
+    // pgvector is installed by the fixture administrator, never by elevating
+    // the application's deliberately unprivileged role.
+    const extensionAdmin = await openDatabase({
+      dataDir: root,
+      databaseUrl: url(database, true),
+    });
+    try {
+      await extensionAdmin.query("CREATE EXTENSION vector");
+      await extensionAdmin.query("CREATE EXTENSION pg_trgm");
+    } finally {
+      await extensionAdmin.close();
+    }
     return connect(database);
   }
   async function close() {

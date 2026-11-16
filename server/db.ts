@@ -1,4 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite-pgvector";
+import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import pg from "pg";
 import { mkdir } from "node:fs/promises";
 import type { Config } from "./config.js";
@@ -81,7 +83,9 @@ export async function openDatabase(
     };
   }
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
-  const db = new PGlite(`${config.dataDir}/postgres`);
+  const db = new PGlite(`${config.dataDir}/postgres`, {
+    extensions: { vector, pg_trgm },
+  });
   await db.waitReady;
   return {
     query: (sql, params) => db.query(sql, params),
@@ -415,5 +419,83 @@ export async function migrate(db: Database) {
       "ALTER TABLE oauth_clients ADD COLUMN last_used_at timestamptz NOT NULL DEFAULT clock_timestamp()",
     );
     await tx.query("INSERT INTO schema_migrations(version) VALUES(14)");
+  });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=15"))
+        .rows.length
+    )
+      return;
+    await tx.query("CREATE EXTENSION IF NOT EXISTS vector");
+    await tx.query("CREATE EXTENSION IF NOT EXISTS pg_trgm");
+    await tx.query(
+      "ALTER TABLE items ADD COLUMN search_text text NOT NULL DEFAULT ''",
+    );
+    await tx.query(
+      "CREATE INDEX items_search_text ON items USING gin(search_text gin_trgm_ops)",
+    );
+    // Keep the text backfill within the normal per-statement deadline, even
+    // on the smallest database CPU allocation. No request timeout is raised.
+    let cursor: string | null = null;
+    for (;;) {
+      const { rows }: { rows: { id: string }[] } = await tx.query<{
+        id: string;
+      }>(
+        `WITH batch AS MATERIALIZED (SELECT id FROM items WHERE $1::uuid IS NULL OR id>$1::uuid ORDER BY id LIMIT 250)
+        UPDATE items i SET search_text=lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,
+          concat_ws(' ',COALESCE(i.reviewed_transcription,s.original_text),s.page_snapshot->>'text'),s.url))
+        FROM batch b,sources s WHERE i.id=b.id AND s.owner=i.owner AND s.id=i.source_id RETURNING i.id`,
+        [cursor],
+      );
+      if (!rows.length) break;
+      cursor = rows
+        .map((row) => row.id)
+        .sort()
+        .at(-1)!;
+    }
+    await tx.query(`CREATE FUNCTION drop_it_item_search_text() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        NEW.search_text := COALESCE((SELECT lower(concat_ws(' ',NEW.title,NEW.summary,array_to_string(NEW.tags,' '),NEW.notes,
+          concat_ws(' ',COALESCE(NEW.reviewed_transcription,s.original_text),s.page_snapshot->>'text'),s.url))
+          FROM sources s WHERE s.owner=NEW.owner AND s.id=NEW.source_id),'');
+        RETURN NEW;
+      END $$`);
+    await tx.query(`CREATE TRIGGER item_search_text BEFORE INSERT OR UPDATE OF title,summary,tags,notes,reviewed_transcription,source_id
+      ON items FOR EACH ROW EXECUTE FUNCTION drop_it_item_search_text()`);
+    await tx.query(`CREATE FUNCTION drop_it_source_search_text() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        UPDATE items i SET search_text=lower(concat_ws(' ',i.title,i.summary,array_to_string(i.tags,' '),i.notes,
+          concat_ws(' ',COALESCE(i.reviewed_transcription,NEW.original_text),NEW.page_snapshot->>'text'),NEW.url))
+          WHERE i.owner=NEW.owner AND i.source_id=NEW.id;
+        DELETE FROM item_embeddings e USING items i WHERE e.owner=NEW.owner AND e.item_id=i.id AND i.owner=e.owner AND i.source_id=NEW.id;
+        RETURN NEW;
+      END $$`);
+    await tx.query(`CREATE TRIGGER source_search_text AFTER UPDATE OF original_text,url,page_snapshot
+      ON sources FOR EACH ROW EXECUTE FUNCTION drop_it_source_search_text()`);
+    // Retain the old cache for rollback and bounded, no-provider cache reuse.
+    await tx.query(
+      "ALTER TABLE item_embeddings ADD COLUMN embedding vector(512), ADD COLUMN indexed_revision integer",
+    );
+    await tx.query(
+      "ALTER TABLE users ADD COLUMN ai_search_epoch integer NOT NULL DEFAULT 0",
+    );
+    // The previous consent described at most 1,000 drops per search. Ask for a
+    // new opt-in before enabling larger, background indexing for existing users.
+    await tx.query(
+      "UPDATE users SET ai_search_enabled=false,ai_search_epoch=1 WHERE ai_search_enabled=true",
+    );
+    await tx.query(`CREATE TABLE search_index_jobs (
+      owner uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      scope jsonb NOT NULL, epoch integer NOT NULL,
+      requested_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      retry_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      lease_token uuid, locked_until timestamptz,
+      CHECK (octet_length(scope::text)<=2048),
+      CHECK ((lease_token IS NULL)=(locked_until IS NULL))
+    )`);
+    await tx.query(
+      "CREATE INDEX search_index_jobs_due ON search_index_jobs(retry_at,requested_at)",
+    );
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(15)");
   });
 }

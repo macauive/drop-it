@@ -4,12 +4,14 @@ import { once } from "node:events";
 import { createApp } from "../server/app.js";
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite-pgvector";
+import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { migrate, type Database } from "../server/db.js";
 import { DatabaseRateLimitStore } from "../server/rate-limit-store.js";
 import { checkSharedStore, checkSharedHttp } from "./rate-limit-fixture.js";
 
 async function fixture() {
-  const pg = new PGlite();
+  const pg = new PGlite({ extensions: { vector, pg_trgm } });
   await pg.waitReady;
   const db: Database = {
     query: (sql, params) => pg.query(sql, params),

@@ -310,7 +310,7 @@ test("migration and verified email linking retain legacy account IDs, libraries,
       "chatgpt_connections",
     ] as const;
     const before = await Promise.all(
-      tables.map((table) => f.db.query(`SELECT * FROM ${table}`)),
+      tables.map(async (table) => (await f.db.query(`SELECT * FROM ${table}`)).rows),
     );
     // Recreate exactly the v10 boundary with synthetic data only.
     await f.db.query(
@@ -323,7 +323,7 @@ test("migration and verified email linking retain legacy account IDs, libraries,
     await migrate(f.db);
     await migrate(f.db);
     const after = await Promise.all(
-      tables.map((table) => f.db.query(`SELECT * FROM ${table}`)),
+      tables.map(async (table) => (await f.db.query(`SELECT * FROM ${table}`)).rows),
     );
     assert.deepEqual(after, before);
     const c = await f.emailAuth.request(
@@ -355,7 +355,7 @@ test("migration and verified email linking retain legacy account IDs, libraries,
     assert.equal((await f.auth.verifyAccessToken(access)).extra?.owner, owner);
     assert.deepEqual(
       (await f.db.query("SELECT * FROM chatgpt_connections")).rows,
-      before[5].rows,
+      before[5],
     );
     assert.equal(
       (await f.library.get(owner, item.item.id)).source.originalText,

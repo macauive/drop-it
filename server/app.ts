@@ -104,7 +104,10 @@ export function createApp(
     (m) => `'sha256-${createHash("sha256").update(m[1]).digest("base64")}'`,
   );
   app.disable("x-powered-by");
-  app.set("trust proxy", proxyTrust(config.trustProxy, config.trustCloudflareProxy));
+  app.set(
+    "trust proxy",
+    proxyTrust(config.trustProxy, config.trustCloudflareProxy),
+  );
   app.use(
     helmet({
       contentSecurityPolicy: {
@@ -934,6 +937,7 @@ export function createApp(
     emailAuth,
     library,
     close: async () => {
+      await library.searchIndexer.close();
       await emailAuth.close();
       await portability.close();
     },

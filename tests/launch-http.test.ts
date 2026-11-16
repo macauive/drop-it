@@ -4,6 +4,8 @@ import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite-pgvector";
+import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { createApp } from "../server/app.js";
 import { migrate, type Database } from "../server/db.js";
 import type { Config } from "../server/config.js";
@@ -20,7 +22,7 @@ let aiCalls = 0;
 const html =
   '<!doctype html><html lang="en"><title>Synthetic launch test</title><div id="root"></div><script>document.title="Synthetic launch test"</script></html>';
 before(async () => {
-  const raw = new PGlite();
+  const raw = new PGlite({ extensions: { vector, pg_trgm } });
   await raw.waitReady;
   db = {
     query: (sql, params) => raw.query(sql, params),

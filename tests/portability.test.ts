@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite-pgvector";
+import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { migrate, type Database, type Queryable } from "../server/db.js";
 import { Library } from "../server/library.js";
 import { Portability } from "../server/portability.js";
@@ -13,7 +15,7 @@ import { exportLibrary } from "./legacy-export-fixture.js";
 let db: Database, library: Library, portability: Portability;
 const owners: string[] = [];
 before(async () => {
-  const pg = new PGlite();
+  const pg = new PGlite({ extensions: { vector, pg_trgm } });
   await pg.waitReady;
   db = { query: (sql, params) => pg.query(sql, params), transaction: run => pg.transaction(run), close: () => pg.close() };
   await migrate(db);

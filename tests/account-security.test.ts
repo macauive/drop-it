@@ -433,7 +433,10 @@ test("migration seven preserves legacy sessions and is idempotent", async () => 
       original_text text NOT NULL, url text NOT NULL, attachment_id uuid)`);
     await legacyDb.query(`CREATE TABLE items (
       id uuid PRIMARY KEY, owner uuid NOT NULL REFERENCES users(id),
-      source_id uuid NOT NULL REFERENCES sources(id), title text NOT NULL)`);
+      source_id uuid NOT NULL REFERENCES sources(id), title text NOT NULL,summary text NOT NULL DEFAULT '',tags text[] NOT NULL DEFAULT '{}',notes text NOT NULL DEFAULT '')`);
+    await legacyDb.query(`CREATE TABLE item_embeddings (
+      owner uuid NOT NULL,item_id uuid NOT NULL,model text NOT NULL,
+      fingerprint text NOT NULL,vector double precision[] NOT NULL,PRIMARY KEY(owner,item_id))`);
     await legacyDb.query("INSERT INTO users(id,password_hash) VALUES($1,$2)", [
       owner,
       originalHash,
@@ -495,7 +498,7 @@ test("migration seven preserves legacy sessions and is idempotent", async () => 
           "SELECT version FROM schema_migrations ORDER BY version",
         )
       ).rows,
-      Array.from({ length: 14 }, (_, index) => ({ version: index + 1 })),
+      Array.from({ length: 15 }, (_, index) => ({ version: index + 1 })),
     );
   } finally {
     await legacyDb.close();

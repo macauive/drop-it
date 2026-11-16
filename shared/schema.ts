@@ -300,4 +300,5 @@ export type SearchResult = {
   aiSearchEnabled?: boolean;
   mode: "keyword" | "semantic" | "hybrid";
   searchNotice?: string;
+  searchIndex?: { total: number; indexed: number; pending: number };
 };

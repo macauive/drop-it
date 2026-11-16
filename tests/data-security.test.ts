@@ -383,7 +383,7 @@ test("the AI concurrency gate rejects before loading attachment bytes or semanti
   let documentReads = 0;
   const observe = (sql: string) => {
     if (sql.includes("SELECT a.bytes,a.mime,a.filename,a.original_text")) attachmentReads++;
-    if (sql.includes('AS "originalText"') && sql.includes('AS "keywordMatch"')) documentReads++;
+    if (sql.includes('AS "originalText"') && (sql.includes("FROM pending") || sql.includes('AS "keywordMatch"'))) documentReads++;
   };
   const observed: Database = {
     ...db,

@@ -62,6 +62,14 @@ export const searchResultSchema = z
     aiSearchEnabled: z.boolean().optional(),
     mode: z.enum(["keyword", "semantic", "hybrid"]),
     searchNotice: z.string().max(1000).optional(),
+    searchIndex: z
+      .object({
+        total: z.number().int().nonnegative(),
+        indexed: z.number().int().nonnegative(),
+        pending: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

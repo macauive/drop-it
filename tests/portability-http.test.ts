@@ -7,6 +7,8 @@ import { createServer, request as httpRequest } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import express, { type ErrorRequestHandler } from "express";
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite-pgvector";
+import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import sharp from "sharp";
 import { migrate, type Database } from "../server/db.js";
 import { AppError } from "../server/errors.js";
@@ -30,7 +32,7 @@ const newOwner = async () => {
   return id;
 };
 before(async () => {
-  const raw = new PGlite();
+  const raw = new PGlite({ extensions: { vector, pg_trgm } });
   await raw.waitReady;
   db = {
     query: (sql, params) => raw.query(sql, params),

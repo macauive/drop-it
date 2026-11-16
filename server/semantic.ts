@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import {
+  scopeFilter,
+  literalPattern,
+  type SearchScope,
+} from "./search-scope.js";
+import {
   embeddingModel,
   dimensions,
   vectorSchema,
@@ -48,86 +53,214 @@ export function similarity(a: number[], b: number[]) {
   }
   return aa && bb ? dot / Math.sqrt(aa * bb) : 0;
 }
-export async function semanticRank(
+
+export const embeddingVersion = `${embeddingModel}:${dimensions}:v1`;
+export const indexBatchSize = 32;
+// Normalize in double precision before casting to pgvector's float32 values.
+// This also handles finite provider values near JS overflow/underflow limits.
+export function normalizedVector(raw: unknown): number[] {
+  const parsed = vectorSchema.safeParse(raw);
+  if (!parsed.success)
+    throw new AppError(
+      502,
+      "AI_FAILED",
+      "AI returned an invalid search index.",
+    );
+  const scale = Math.max(...parsed.data.map(Math.abs));
+  const scaled = parsed.data.map((value) => value / scale);
+  const norm = Math.sqrt(scaled.reduce((sum, value) => sum + value * value, 0));
+  return scaled.map((value) => value / norm);
+}
+export async function requireSearchPermission(
+  db: Database,
+  owner: string,
+  epoch: number,
+) {
+  const { rows } = await db.query(
+    "SELECT id FROM users WHERE id=$1 AND ai_search_enabled=true AND ai_search_epoch=$2",
+    [owner, epoch],
+  );
+  if (!rows.length)
+    throw new AppError(
+      403,
+      "AI_DISABLED",
+      "AI search is turned off or its permission changed. Search again.",
+    );
+}
+export async function searchIndexStatus(
+  db: Database,
+  owner: string,
+  scope: SearchScope,
+) {
+  const { params, filtered } = scopeFilter(owner, scope);
+  const { rows } = await db.query<{ total: number; indexed: number }>(
+    `SELECT count(*)::integer AS total, count(e.item_id)::integer AS indexed
+    FROM items i LEFT JOIN item_embeddings e ON e.owner=i.owner AND e.item_id=i.id
+      AND e.indexed_revision=i.revision AND e.model=$${params.length + 1} AND e.embedding IS NOT NULL
+    WHERE ${filtered}`,
+    [...params, embeddingVersion],
+  );
+  return { ...rows[0], pending: rows[0].total - rows[0].indexed };
+}
+export async function indexSearchBatch(
   db: Database,
   ai: AIProvider,
   owner: string,
-  query: string,
-  documents: SearchDocument[],
-  allowed: () => Promise<boolean> = async () => true,
+  scope: SearchScope,
+  epoch: number,
 ) {
-  if (!documents.length) return [];
-  const model = `${embeddingModel}:${dimensions}:v1`;
-  const cached = await db.query<{
-    item_id: string;
-    fingerprint: string;
-    vector: number[];
-  }>(
-    "SELECT item_id,fingerprint,vector FROM item_embeddings WHERE owner=$1 AND model=$2 AND item_id=ANY($3::uuid[])",
-    [owner, model, documents.map((d) => d.id)],
+  await requireSearchPermission(db, owner, epoch);
+  const { params, filtered } = scopeFilter(owner, scope);
+  const { rows: documents } = await db.query<
+    SearchDocument & {
+      fingerprint: string | null;
+      vector: unknown;
+      model: string | null;
+    }
+  >(
+    `WITH pending AS MATERIALIZED (
+      SELECT i.id FROM items i LEFT JOIN item_embeddings e ON e.owner=i.owner AND e.item_id=i.id
+      WHERE ${filtered} AND (e.item_id IS NULL OR e.embedding IS NULL OR e.indexed_revision IS DISTINCT FROM i.revision OR e.model<>$${params.length + 1})
+      ORDER BY i.id LIMIT ${indexBatchSize}
+    ) SELECT i.id,i.revision,i.title,i.summary,i.category,i.tags,left(i.notes,1000) AS notes,
+      left(concat_ws(' ',COALESCE(i.reviewed_transcription,s.original_text),s.page_snapshot->>'text'),4000) AS "originalText",
+      e.fingerprint,e.vector,e.model
+    FROM pending p JOIN items i ON i.owner=$1 AND i.id=p.id
+    JOIN sources s ON s.id=i.source_id AND s.owner=i.owner
+    LEFT JOIN item_embeddings e ON e.owner=i.owner AND e.item_id=i.id
+    ORDER BY i.id`,
+    [...params, embeddingVersion],
   );
-  const cache = new Map(cached.rows.map((row) => [row.item_id, row]));
-  const vectors = new Map<string, number[]>();
-  const pending = [];
-  for (const doc of documents) {
-    const text = searchText(doc),
-      fingerprint = createHash("sha256").update(text).digest("hex"),
-      entry = cache.get(doc.id);
-    if (
-      entry?.fingerprint === fingerprint &&
-      vectorSchema.safeParse(entry.vector).success
-    )
-      vectors.set(doc.id, entry.vector);
-    else pending.push({ doc, text, fingerprint });
-  }
-  const deadline = Date.now() + 45000;
-  const checkPermission = async () => {
-    if (!(await allowed()))
-      throw new AppError(
-        403,
-        "AI_DISABLED",
-        "AI search is turned off in Settings.",
-      );
-  };
-  for (let offset = 0; offset < pending.length; offset += 32) {
-    if (Date.now() > deadline)
-      throw new AppError(
-        503,
-        "AI_INDEXING",
-        "Search indexing is still in progress. Retry to continue, or use keyword search.",
-      );
-    await checkPermission();
-    const batch = pending.slice(offset, offset + 32),
-      embedded = await ai.embed(batch.map((entry) => entry.text));
-    if (embedded.length !== batch.length)
+  if (!documents.length) return 0;
+  const batch = documents.map((doc) => {
+    const text = searchText(doc);
+    const fingerprint = createHash("sha256").update(text).digest("hex");
+    const cached =
+      doc.model === embeddingVersion &&
+      doc.fingerprint === fingerprint &&
+      vectorSchema.safeParse(doc.vector).success;
+    return {
+      doc,
+      text,
+      fingerprint,
+      vector: cached ? normalizedVector(doc.vector) : undefined,
+    };
+  });
+  const missing = batch.filter((entry) => !entry.vector);
+  if (missing.length) {
+    await requireSearchPermission(db, owner, epoch);
+    const embedded = await ai.embed(missing.map((entry) => entry.text));
+    if (embedded.length !== missing.length)
       throw new AppError(
         502,
         "AI_FAILED",
         "AI returned an invalid search index.",
       );
-    for (let i = 0; i < batch.length; i++) {
-      const { doc, fingerprint } = batch[i],
-        vector = vectorSchema.parse(embedded[i]);
-      vectors.set(doc.id, vector);
-      // Skip records edited or deleted while the external call was in flight.
-      await db.query(
-        `INSERT INTO item_embeddings(owner,item_id,model,fingerprint,vector)
-        SELECT owner,id,$3,$4,$5 FROM items WHERE owner=$1 AND id=$2 AND revision=$6
-          AND EXISTS(SELECT 1 FROM users WHERE id=$1 AND ai_search_enabled=true)
-        ON CONFLICT(owner,item_id) DO UPDATE SET model=EXCLUDED.model,fingerprint=EXCLUDED.fingerprint,vector=EXCLUDED.vector`,
-        [owner, doc.id, model, fingerprint, vector, doc.revision],
-      );
-    }
+    for (let i = 0; i < missing.length; i++)
+      missing[i].vector = normalizedVector(embedded[i]);
   }
-  await checkPermission();
-  const [rawQuery] = await ai.embed([query]);
-  const queryVector = vectorSchema.parse(rawQuery);
-  return documents
-    .map((doc) => ({
-      id: doc.id,
-      revision: doc.revision,
-      score: similarity(queryVector, vectors.get(doc.id)!),
-    }))
-    .filter((entry) => entry.score >= 0.2)
-    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  // One bounded write, guarded against edits, deletion, preference revocation,
+  // and revocation followed by re-enabling while an external call was running.
+  await db.transaction(async (tx) => {
+    // Serialize with preference changes and content edits, but never hold this
+    // lock while awaiting the provider. MVCC checks alone permit a late insert
+    // to race a preference transaction's cache deletion.
+    const permission = await tx.query(
+      "SELECT id FROM users WHERE id=$1 AND ai_search_enabled=true AND ai_search_epoch=$2 FOR UPDATE",
+      [owner, epoch],
+    );
+    if (!permission.rows.length)
+      throw new AppError(
+        403,
+        "AI_DISABLED",
+        "AI search permission changed. Search again.",
+      );
+    await tx.query(
+      `INSERT INTO item_embeddings(owner,item_id,model,fingerprint,vector,embedding,indexed_revision)
+    SELECT i.owner,i.id,$2,b.fingerprint,b.vector,b.embedding::vector(512),i.revision
+    FROM jsonb_to_recordset($3::jsonb) AS b(id uuid,revision integer,fingerprint text,vector double precision[],embedding text)
+    JOIN items i ON i.owner=$1 AND i.id=b.id AND i.revision=b.revision
+    JOIN users u ON u.id=i.owner AND u.ai_search_enabled=true AND u.ai_search_epoch=$4
+    ON CONFLICT(owner,item_id) DO UPDATE SET model=EXCLUDED.model,fingerprint=EXCLUDED.fingerprint,
+      vector=EXCLUDED.vector,embedding=EXCLUDED.embedding,indexed_revision=EXCLUDED.indexed_revision`,
+      [
+        owner,
+        embeddingVersion,
+        JSON.stringify(
+          batch.map(({ doc, fingerprint, vector }) => ({
+            id: doc.id,
+            revision: doc.revision,
+            fingerprint,
+            vector,
+            embedding: JSON.stringify(vector),
+          })),
+        ),
+        epoch,
+      ],
+    );
+  });
+  await requireSearchPermission(db, owner, epoch);
+  return documents.length;
+}
+
+export async function semanticPage(
+  db: Database,
+  owner: string,
+  scope: SearchScope,
+  epoch: number,
+  queryVector: number[],
+  terms: string[],
+  hybrid: boolean,
+  limit: number,
+  offset: number,
+) {
+  const { params, filtered } = scopeFilter(owner, scope);
+  const model = `$${params.length + 1}`,
+    vector = `$${params.length + 2}::vector(512)`,
+    permissionEpoch = `$${params.length + 3}`;
+  const keywordFilter = terms
+    .map(
+      (_, index) =>
+        `i.search_text LIKE $${params.length + 6 + index} ESCAPE '!'`,
+    )
+    .join(" AND ");
+  type Match = {
+    id: string;
+    revision: number;
+    keyword: boolean;
+    semantic: boolean;
+  };
+  // Exact scoring intentionally avoids a global ANN index: tenant and view
+  // filters apply before scoring, with no approximate-recall loss at 10k items.
+  // Only page-sized IDs leave PostgreSQL; documents/vectors stay in the DB.
+  const { rows } = await db.query<{ total: number; matches: Match[] }>(
+    `WITH keywords AS MATERIALIZED (
+      SELECT i.id FROM items i WHERE ${filtered} AND ${keywordFilter}
+    ), scored AS MATERIALIZED (
+      SELECT i.id,i.revision,k.id IS NOT NULL AS keyword,
+        1-(e.embedding <=> ${vector}) AS score
+      FROM items i LEFT JOIN keywords k ON k.id=i.id
+      JOIN users u ON u.id=i.owner AND u.ai_search_enabled=true AND u.ai_search_epoch=${permissionEpoch}
+      LEFT JOIN item_embeddings e ON e.owner=i.owner AND e.item_id=i.id AND e.model=${model}
+        AND e.indexed_revision=i.revision AND e.embedding IS NOT NULL
+      WHERE ${filtered}
+    ), matched AS MATERIALIZED (
+      SELECT id,revision,keyword,COALESCE(score>=0.2,false) AS semantic,COALESCE(score,0) AS score
+      FROM scored WHERE score>=0.2 ${hybrid ? "OR keyword" : ""}
+    ), page AS (
+      SELECT id,revision,keyword,semantic FROM matched
+      ORDER BY ${hybrid ? "keyword DESC," : ""}score DESC,id LIMIT $${params.length + 4} OFFSET $${params.length + 5}
+    ) SELECT (SELECT count(*)::integer FROM matched) AS total,
+      COALESCE((SELECT jsonb_agg(page) FROM page),'[]'::jsonb) AS matches`,
+    [
+      ...params,
+      embeddingVersion,
+      JSON.stringify(queryVector),
+      epoch,
+      limit,
+      offset,
+      ...terms.map(literalPattern),
+    ],
+  );
+  return rows[0];
 }

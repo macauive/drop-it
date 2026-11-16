@@ -2,12 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite-pgvector";
+import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { migrate, type Database } from "../server/db.js";
 import { cleanupExpired } from "../server/maintenance.js";
 import { Auth } from "../server/auth.js";
 
 test("maintenance removes old counters and only unused, unreferenced OAuth clients", async () => {
-  const pg = new PGlite();
+  const pg = new PGlite({ extensions: { vector, pg_trgm } });
   await pg.waitReady;
   const db: Database = {
     query: (sql, params) => pg.query(sql, params),

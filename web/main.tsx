@@ -1129,6 +1129,12 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
             !error && (
               <p className="field-note" role="status">
                 {data.searchNotice}
+                {Boolean(data.searchIndex?.pending) && (
+                  <>
+                    {" "}
+                    <button onClick={refresh}>Refresh results</button>
+                  </>
+                )}
               </p>
             )}
           <form
@@ -1995,7 +2001,7 @@ function SettingsPanel({
             Drafting sends the selected source text, link and image or PDF
             content to OpenAI when you request a draft.
             {!settings?.chatgpt?.planRequired &&
-              " Optional AI search sends your query and may index excerpts from all drops in the selected view and pool (up to 1,000), including unrelated notes and transcription. Unchanged indexed text is cached."}{" "}
+              " Optional AI search sends your query and may index excerpts from all drops in the selected view and pool (up to 1,000), including unrelated notes and transcription. Indexing continues in the background for the selected filters, even after you leave the page. Turning AI search off cancels queued indexing. Unchanged indexed text is cached."}{" "}
             Keyword-only search makes no OpenAI requests.
           </p>
           <label className="preference-checkbox">
