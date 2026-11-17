@@ -385,7 +385,6 @@ try {
     "ALTER TABLE users DROP COLUMN email,DROP COLUMN email_verified_at",
   );
   await source.query("DROP TABLE page_captures");
-  await source.query("ALTER TABLE sources DROP COLUMN page_snapshot");
   await source.query("DROP TABLE rate_limit_counters");
   await source.query("ALTER TABLE oauth_clients DROP COLUMN last_used_at");
   await source.query("DROP TRIGGER item_search_text ON items");
@@ -393,6 +392,7 @@ try {
   await source.query(
     "DROP FUNCTION drop_it_item_search_text(),drop_it_source_search_text()",
   );
+  await source.query("ALTER TABLE sources DROP COLUMN page_snapshot");
   await source.query("ALTER TABLE items DROP COLUMN search_text");
   await source.query("DROP TABLE search_index_jobs");
   await source.query("ALTER TABLE users DROP COLUMN ai_search_epoch");
@@ -446,9 +446,12 @@ try {
   ]);
   assert.ok((await readFile(dump)).byteLength > 0);
   const restored = await fixture.create("restored_fixture");
+  // The administrator preinstalls extensions. Keep the restoring app role
+  // unprivileged and omit extension-owner comments; table data is checked below.
   await run(binary("pg_restore"), [
     "--no-owner",
     "--no-privileges",
+    "--no-comments",
     "--exit-on-error",
     "--dbname",
     fixture.url("restored_fixture"),
