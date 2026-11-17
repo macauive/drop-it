@@ -5,6 +5,7 @@ import express, {
 } from "express";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
+import { adMeasurementEnabled, adMeasurementReference, reportAdConversion } from "./ad-measurement.js";
 import rateLimit from "express-rate-limit";
 import { proxyTrust } from "./proxy.js";
 import { DatabaseRateLimitStore } from "./rate-limit-store.js";
@@ -135,7 +136,13 @@ export function createApp(
     next();
   });
   app.use(cookieParser());
-  addPublicPages(app, config.publicSite);
+  const measurement = {
+    pixelId: process.env.OPENAI_ADS_PIXEL_ID,
+    apiKey: process.env.OPENAI_ADS_CONVERSION_KEY,
+  };
+  const measurementEnabled = !config.local &&
+    config.origin === "https://dontdropit.app" && adMeasurementEnabled(measurement);
+  addPublicPages(app, config.publicSite, measurementEnabled);
   app.get("/.well-known/openai-apps-challenge", (_req, res) => {
     if (!config.domainChallenge) {
       res.sendStatus(404);
@@ -346,7 +353,11 @@ export function createApp(
     const { requestId, code, password } = emailChallengeSchema
       .extend({ password: newPasswordSchema })
       .parse(req.body);
-    res.json(await emailAuth.verify("signup", { requestId, code }, password));
+    const result = await emailAuth.verify("signup", { requestId, code }, password);
+    res.json(result);
+    if (result.ok && measurementEnabled) {
+      void reportAdConversion(measurement, adMeasurementReference(req.headers.cookie, req.get("Sec-GPC")), "registration_completed");
+    }
   });
   app.post("/api/email/request-reset", loginLimiter, async (req, res) => {
     const { email } = z.object({ email: emailSchema }).strict().parse(req.body);

@@ -7,7 +7,7 @@ import {
 
 // This page is deliberately static: no account data or client-side scripts.
 // The caller supplies an HTML-escaped publisher name.
-export function renderAboutPage(publisher: string) {
+export function renderAboutPage(publisher: string, measurement = "") {
   const icon = (paths: string, className = "") =>
     `<svg class="${className}" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
   const arrow = icon('<path d="M7 17 17 7M7 7h10v10"/>');
@@ -388,6 +388,7 @@ export function renderAboutPage(publisher: string) {
 </head>
 <body>
   ${publicHeader("/about")}
+  ${measurement}
   <main id="main" class="container">
     <section class="hero" aria-labelledby="about-title">
       <div>
