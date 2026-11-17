@@ -390,13 +390,20 @@ try {
   await source.query("ALTER TABLE oauth_clients DROP COLUMN last_used_at");
   await source.query("DROP TRIGGER item_search_text ON items");
   await source.query("DROP TRIGGER source_search_text ON sources");
-  await source.query("DROP FUNCTION drop_it_item_search_text(),drop_it_source_search_text()");
+  await source.query(
+    "DROP FUNCTION drop_it_item_search_text(),drop_it_source_search_text()",
+  );
   await source.query("ALTER TABLE items DROP COLUMN search_text");
   await source.query("DROP TABLE search_index_jobs");
   await source.query("ALTER TABLE users DROP COLUMN ai_search_epoch");
-  await source.query("ALTER TABLE item_embeddings DROP COLUMN embedding,DROP COLUMN indexed_revision");
   await source.query(
-    "DELETE FROM schema_migrations WHERE version IN (11,12,13,14,15)",
+    "ALTER TABLE users DROP COLUMN onboarding_dismissed,DROP COLUMN onboarding_found,DROP COLUMN onboarding_website_only",
+  );
+  await source.query(
+    "ALTER TABLE item_embeddings DROP COLUMN embedding,DROP COLUMN indexed_revision",
+  );
+  await source.query(
+    "DELETE FROM schema_migrations WHERE version IN (11,12,13,14,15,16)",
   );
   const tables = [
     "users",
@@ -456,7 +463,7 @@ try {
         "SELECT max(version)::int AS version FROM schema_migrations",
       )
     ).rows[0].version,
-    15,
+    16,
   );
   assert.equal(
     (

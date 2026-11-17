@@ -1481,6 +1481,127 @@ html[data-theme="dark"] .layout-icon .drop-preview {
 .onboarding-notice p {
   margin: 8px 0 12px;
 }
+.getting-started {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  padding: 24px;
+  margin-bottom: 32px;
+}
+.getting-started-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.getting-started .eyebrow {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.getting-started h2 {
+  font-size: 22px;
+  letter-spacing: -0.025em;
+  margin: 8px 0;
+}
+.getting-started p {
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 8px 0 14px;
+}
+.getting-started .setup-progress {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+.setup-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+  list-style: none;
+  margin: 20px 0 0;
+  padding: 0;
+}
+.setup-steps li {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+}
+.setup-number {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  justify-content: center;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+}
+.setup-number.is-complete {
+  background: #e7f3eb;
+  color: #247343;
+  border-color: #c6e2d0;
+}
+.setup-steps h3,
+.setup-connections h3 {
+  font-size: 14px;
+  margin: 14px 0 6px;
+}
+.setup-steps p {
+  font-size: 12px;
+}
+.setup-steps button {
+  font-size: 12px;
+}
+.setup-later {
+  display: flex;
+  margin-top: 9px;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  padding-left: 0;
+}
+.setup-done {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.setup-connections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  margin-top: 22px;
+}
+.setup-connections p,
+.setup-connections a {
+  font-size: 12px;
+}
+.setup-connections .setup-check {
+  grid-column: 1/-1;
+}
+.getting-started .setup-footnote {
+  font-size: 11px;
+  margin: 20px 0 0;
+}
+html[data-theme="dark"] .getting-started {
+  background: var(--surface);
+}
+@media (max-width: 800px) {
+  .setup-steps,
+  .setup-connections {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .getting-started {
+    padding: 18px;
+  }
+  .getting-started h2 {
+    font-size: 20px;
+  }
+}
 .search-options {
   margin: 12px 0 22px;
 }

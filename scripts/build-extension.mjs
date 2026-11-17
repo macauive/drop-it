@@ -13,7 +13,9 @@ import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const origin = new URL(process.argv[2] || "https://dontdropit.app");
+const origin = new URL(
+  process.argv[2] || process.env.PUBLIC_URL || "https://dontdropit.app",
+);
 const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname);
 if (
   (origin.protocol !== "https:" &&

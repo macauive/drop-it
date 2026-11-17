@@ -75,6 +75,7 @@ import { PortabilitySettings } from "./portability.js";
 import { sharedCaptureSchema, type SharedCapture } from "../shared/capture.js";
 import { RecoveryForm, SecuritySettings } from "./security.js";
 import { EmailAuthForm } from "./email-auth.js";
+import { GettingStarted, useOnboarding } from "./onboarding.js";
 import {
   fileAccept,
   fileMime,
@@ -735,6 +736,8 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
   const [security, setSecurity] = useState<SecurityInfo | null>(null),
     [recoveryDeferred, setRecoveryDeferred] = useState(false);
   const [securityNotice, setSecurityNotice] = useState("");
+  const guide = useOnboarding(tick);
+  const reloadGuide = guide.reload;
   const refresh = useCallback(() => {
     setHasRequestedSearch(true);
     setTick((v) => v + 1);
@@ -790,6 +793,12 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
           return;
         }
         setData(value);
+        if (
+          !embedded &&
+          query.trim() &&
+          value.items.some((item) => !item.trashedAt)
+        )
+          reloadGuide();
       })
       .catch((e) => {
         if (active) setError(message(e));
@@ -812,6 +821,7 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
     requestedSearchMode,
     hasRequestedSearch,
     pageSize,
+    reloadGuide,
   ]);
   useEffect(() => {
     if (!embedded) return;
@@ -1052,6 +1062,34 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
           </div>
         </header>
         <section className="library-content">
+          {!embedded && (
+            <GettingStarted
+              guide={guide}
+              onSave={() => {
+                setHostDraft(undefined);
+                setSharedCapture(undefined);
+                setAdding(true);
+              }}
+              onFind={(title) => {
+                setSearchDraft(title);
+                setQuery(title);
+                setView("All drops");
+                setCategory("");
+                setTag("");
+                setTagDraft("");
+                setAfter("");
+                setBefore("");
+                setRequestedSearchMode("keyword");
+                setOffset(0);
+                refresh();
+                document
+                  .querySelector<HTMLInputElement>(
+                    'input[aria-label="Search your library"]',
+                  )
+                  ?.focus();
+              }}
+            />
+          )}
           {!embedded &&
             !recoveryDeferred &&
             security &&
@@ -1533,6 +1571,11 @@ function Library({ onLogout }: { onLogout: (notice?: string) => void }) {
       )}
       {settingsOpen && !embedded && (
         <SettingsPanel
+          onGettingStarted={async () => {
+            await guide.act("reopen");
+            setSettingsOpen(false);
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
           onClose={() => {
             setSettingsOpen(false);
             loadSecurity();
@@ -1612,10 +1655,12 @@ function SettingsPanel({
   onClose,
   onSignedOut,
   onChanged,
+  onGettingStarted,
 }: {
   onClose: () => void;
   onSignedOut: (notice: string) => void;
   onChanged: () => void;
+  onGettingStarted: () => Promise<void>;
 }) {
   const [settings, setSettings] = useState<LibrarySettings | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -1701,6 +1746,26 @@ function SettingsPanel({
     >
       <div className="panel-body settings-body">
         <Alert text={error} />
+        <section
+          className="settings-section"
+          aria-labelledby="settings-getting-started"
+        >
+          <h3 id="settings-getting-started">Getting started</h3>
+          <p>
+            Save a drop, connect a capture method, and find something in your
+            library.
+          </p>
+          <button
+            disabled={busy !== null}
+            onClick={() =>
+              void onGettingStarted().catch(() =>
+                setError("Could not open getting started. Please try again."),
+              )
+            }
+          >
+            Open getting started
+          </button>
+        </section>
         {notice && (
           <p className="settings-notice" role="status">
             {notice}
@@ -2001,7 +2066,7 @@ function SettingsPanel({
             Drafting sends the selected source text, link and image or PDF
             content to OpenAI when you request a draft.
             {!settings?.chatgpt?.planRequired &&
-              " Optional AI search sends your query and may index excerpts from all drops in the selected view and pool (up to 1,000), including unrelated notes and transcription. Indexing continues in the background for the selected filters, even after you leave the page. Turning AI search off cancels queued indexing. Unchanged indexed text is cached."}{" "}
+              " Optional AI search sends your query and may index excerpts from all drops in the selected view and pool (up to 10,000), including unrelated notes and transcription. Indexing continues in the background for the selected filters, even after you leave the page. Turning AI search off cancels queued indexing. Unchanged indexed text is cached."}{" "}
             Keyword-only search makes no OpenAI requests.
           </p>
           <label className="preference-checkbox">

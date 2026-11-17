@@ -10,7 +10,7 @@
     "dev": "npm run build:web && tsx watch server/index.ts",
     "start": "tsx server/index.ts",
     "build:web": "vite build",
-    "build": "npm run typecheck && npm run build:web",
+    "build": "npm run typecheck && npm run build:web && npm run build:extension",
     "build:extension": "node scripts/build-extension.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",

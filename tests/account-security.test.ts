@@ -425,7 +425,9 @@ test("migration seven preserves legacy sessions and is idempotent", async () => 
     await legacyDb.query(
       "CREATE TABLE sessions(hash text PRIMARY KEY,owner uuid NOT NULL REFERENCES users(id),expires_at timestamptz NOT NULL)",
     );
-    await legacyDb.query("CREATE TABLE oauth_clients(id text PRIMARY KEY,data jsonb NOT NULL)");
+    await legacyDb.query(
+      "CREATE TABLE oauth_clients(id text PRIMARY KEY,data jsonb NOT NULL)",
+    );
     // Later migrations also touch library tables. Keep a legacy library row
     // in this isolated fixture instead of pretending versions 1–6 had none.
     await legacyDb.query(`CREATE TABLE sources (
@@ -498,7 +500,7 @@ test("migration seven preserves legacy sessions and is idempotent", async () => 
           "SELECT version FROM schema_migrations ORDER BY version",
         )
       ).rows,
-      Array.from({ length: 15 }, (_, index) => ({ version: index + 1 })),
+      Array.from({ length: 16 }, (_, index) => ({ version: index + 1 })),
     );
   } finally {
     await legacyDb.close();

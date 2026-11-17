@@ -498,4 +498,19 @@ export async function migrate(db: Database) {
     );
     await tx.query("INSERT INTO schema_migrations(version) VALUES(15)");
   });
+  await db.transaction(async (tx) => {
+    if (
+      (await tx.query("SELECT version FROM schema_migrations WHERE version=16"))
+        .rows.length
+    )
+      return;
+    await tx.query(`ALTER TABLE users
+      ADD COLUMN onboarding_dismissed boolean NOT NULL DEFAULT false,
+      ADD COLUMN onboarding_found boolean NOT NULL DEFAULT false,
+      ADD COLUMN onboarding_website_only boolean NOT NULL DEFAULT false`);
+    // Existing accounts can opt into the guide from Settings. Newly created
+    // accounts get it automatically, including accounts created via OAuth.
+    await tx.query("UPDATE users SET onboarding_dismissed=true");
+    await tx.query("INSERT INTO schema_migrations(version) VALUES(16)");
+  });
 }

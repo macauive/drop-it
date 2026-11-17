@@ -45,6 +45,7 @@ import { appIconSvg } from "./public-brand.js";
 import { thumbnail } from "./thumbnails.js";
 import { stageLegacyExport } from "./export-file.js";
 import { addExtensionRoutes } from "./extension.js";
+import { Onboarding, extensionArchive } from "./onboarding.js";
 
 const appIconPng: Partial<Record<192 | 512, Promise<Buffer>>> = {};
 function pngAppIcon(size: 192 | 512) {
@@ -71,6 +72,7 @@ export function createApp(
 ) {
   const app = express();
   const auth = new Auth(db, config);
+  const onboarding = new Onboarding(db, config);
   const emailAuth = new EmailAuth(
     db,
     auth,
@@ -523,6 +525,23 @@ export function createApp(
       .clearCookie(cookie, { ...cookieOptions, maxAge: undefined })
       .json({ ok: true });
   });
+  app.get("/api/onboarding", async (_req, res) => {
+    res.json(await onboarding.status(res.locals.owner));
+  });
+  app.patch("/api/onboarding", async (req, res) => {
+    res.json(await onboarding.act(res.locals.owner, req.body));
+  });
+  app.get("/api/onboarding/extension", async (_req, res, next) => {
+    if (!(await onboarding.extensionAvailable()))
+      throw new AppError(
+        404,
+        "EXTENSION_UNAVAILABLE",
+        "The extension download is not available for this deployment.",
+      );
+    res.download(extensionArchive, "drop-it-chrome.zip", (error) => {
+      if (error) next(error);
+    });
+  });
   app.get("/api/settings", async (_req, res) => {
     const chatgptStatus = await chatgpt.status(res.locals.owner);
     const { rows } = await db.query<{ count: string }>(
@@ -640,11 +659,13 @@ export function createApp(
     );
     res.type("image/webp").send(await thumbnail(image.bytes, size));
   });
-  app.post("/api/search", async (req, res) =>
-    res.json(
-      await library.search(res.locals.owner, searchSchema.parse(req.body)),
-    ),
-  );
+  app.post("/api/search", async (req, res) => {
+    const input = searchSchema.parse(req.body);
+    const result = await library.search(res.locals.owner, input);
+    if (input.query?.trim() && result.items.some((item) => !item.trashedAt))
+      await onboarding.found(res.locals.owner);
+    res.json(result);
+  });
   app.post("/api/draft", async (req, res) =>
     res.json(await library.draft(res.locals.owner, req.body)),
   );

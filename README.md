@@ -105,6 +105,16 @@ Only **Import … drops as copies** applies a preview. Apply remaps ownership an
 
 Legacy `/api/export` remains available as JSON v2 for compatibility, with its conservative 384 MiB serialized-size cap and repeated file bytes per source. It writes paged metadata and bounded file chunks to a private temporary file instead of buffering the complete archive. The consistent read-only snapshot finishes before the file is streamed to the browser with backpressure; a five-minute deadline covers preparation and delivery. Temporary files are removed on completion or failure. Files abandoned by a process crash are cleaned on a subsequent legacy export after twenty minutes. It is no longer the Settings backup flow. Neither format includes account credentials, sessions, connected-app tokens or AI embeddings. Treat downloaded archives as private originals. This self-service import restores library content; it does not replace an operator's database/account disaster-recovery procedure.
 
+## Guided onboarding
+
+New accounts see a three-step guide: save a real drop, choose a capture method, and search for something saved. The guide is dismissible and can be reopened under **Settings → Getting started**. Migration 16 keeps existing accounts dismissed by default. Progress and the website-only choice are stored per account; no search text or analytics events are retained for onboarding.
+
+Saving is checked against active owned drops. Connection completion requires an unexpired extension or ChatGPT OAuth grant for that account and an allowed callback, rather than a clicked link or client name. A nonempty website search must return an active owned drop before retrieval completes. Choosing **Use the website for now** is recorded separately from connecting an app. The guide is omitted from the embedded ChatGPT library.
+
+`npm run build` also packages the Chrome extension (requires `zip`). The package uses `PUBLIC_URL` when provided, otherwise the existing public service origin. The authenticated download is offered only when an extension callback is configured and the built package targets this deployment. Desktop Chrome installation is currently manual: unzip, open Chrome Extensions, enable Developer mode, load the unpacked folder, pin Drop It, then Connect. ChatGPT guidance links to the app and official connection help; availability depends on the user's account and workspace.
+
+`tests/onboarding.test.ts` covers authenticated access, strict input/origin checks, account isolation, durable progress, real search completion, connection expiry/revocation and migration behavior. `tests/onboarding-preview.ts` is a disposable loopback browser fixture with synthetic accounts and an optional synthetic connection.
+
 ## Connect ChatGPT
 
 The local app is usable now. An actual ChatGPT connection additionally requires a reachable HTTPS endpoint and configuration in your ChatGPT account.
@@ -168,7 +178,7 @@ For legacy export changes, `node --import tsx tests/postgres-legacy-export.ts` c
 ## Deliberate limits
 
 - Defaults to private, single-owner onboarding. A public deployment and earlier core-flow evidence are recorded, but the current changes still need their own deployment and live-host verification. Signup remains deliberately closed; no billing, shared collections or team invitations.
-- No browser extension, Apple Notes import, reminders, automatic webpage scraping or offline library cache. The text/link share target depends on actual installed-browser support; it is not a native mobile share extension.
+- No Apple Notes import, reminders or offline library cache. Chrome extension installation is manual; the text/link share target depends on actual installed-browser support and is not a native mobile share extension.
 - No MFA or passkeys. Keep your password, verified email account and offline recovery code secure.
 - Backups may retain deleted content until you rotate them; export files contain your original private content.
 - OAuth/password accounts have local protocol/security coverage and earlier hosted evidence. Fresh reviewer scenarios, walkthrough recording, ordinary download clicks, physical mobile/share-sheet behavior, provider alerts/load evidence, support-mail delivery and managed recovery/cutover remain explicit release gates. See the [ChatGPT checklist](release/chatgpt-verification-checklist.md) and [operations runbook](release/operations-runbook.md). GitHub CI/billing remain deferred; the app must stay unsubmitted and unpublished until separately authorized.
