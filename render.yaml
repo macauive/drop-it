@@ -7,7 +7,7 @@ services:
     region: ohio
     plan: 0.5c-512mb
     numInstances: 1
-    autoDeployTrigger: "off"
+    autoDeployTrigger: commit
     buildCommand: npm ci --include=dev && npm run build
     startCommand: node --import tsx server/index.ts
     healthCheckPath: /ready
